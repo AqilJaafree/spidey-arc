@@ -21,3 +21,7 @@ test-ledger/
 brand.md
 usdc-lp-vault-spec.md
 docs/
+
+# Foundry build + deps (restore with `forge install` — see README)
+contracts/out/
+contracts/lib/

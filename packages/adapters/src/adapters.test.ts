@@ -184,15 +184,20 @@ describe('DefiLlama adapter (fixture replay)', () => {
 
 describe('end to end: adapters into rank(A)', () => {
   it('ranks Orca pools and excludes every denominator-less venue', async () => {
-    const [orca, raydium, llama] = await Promise.all([
-      orcaAdapter.listPools({ symbols: ['USDC'], limit: 60 }),
-      raydiumAdapter.listPools({ symbols: ['USDC'], limit: 60 }),
-      defiLlamaAdapter.listPools({ limit: 60 }),
+    // Orca stamps `asOf` from the fixture's own `updatedAt`, while Raydium and
+    // DefiLlama publish no timestamp and fall back to the injected clock. So
+    // the clock has to be pinned to the RECORDED data, then handed to the
+    // other adapters — deriving it from the merged set instead lets the
+    // wall-clock rows drag `now` forward and age every Orca row out.
+    const orca = await orcaAdapter.listPools({ symbols: ['USDC'], limit: 60 });
+    const now = Math.max(...orca.pools.map((p) => p.asOf));
+
+    const [raydium, llama] = await Promise.all([
+      raydiumAdapter.listPools({ symbols: ['USDC'], limit: 60, now }),
+      defiLlamaAdapter.listPools({ limit: 60, now }),
     ]);
     const pools = [...orca.pools, ...raydium.pools, ...llama.pools];
 
-    // `now` pinned to the freshest row so recorded fixtures do not age out.
-    const now = Math.max(...pools.map((p) => p.asOf));
     const result = rank(pools, { depositUsd: 10_000, now });
 
     expect(result.ranked.length).toBeGreaterThan(0);
