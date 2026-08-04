@@ -104,17 +104,42 @@ The spec listed these as "open items to verify before committing". Checked direc
 |---|---|
 | Chain ID | **5042002** (`0x4cef52`), reth v1.11.3 |
 | RPC | `https://rpc.testnet.arc.network` |
-| Native gas decimals | **18**, not 6. A live transfer of `1e17` base units reads as 0.1 USDC; a 48,950-gas fee as $0.00137. Several sources say 6 — that is wallet display metadata, not the protocol unit. |
+| CCTP domain | **26** |
+| USDC ERC-20 | `0x3600000000000000000000000000000000000000` — 6 decimals |
+| TokenMessengerV2 | `0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA` |
+| MessageTransmitterV2 | `0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275` |
+| Native gas decimals | **18**, not 6 |
 | Cancun opcodes | **Supported.** `TSTORE`/`TLOAD`, `MCOPY` and `BLOBBASEFEE` all execute. The reentrancy guard uses transient storage (~100 gas vs ~5,000). |
+
+The decimal split is not a footnote — it is the same money behind two interfaces, exactly 1e12 apart. A live account reads:
+
+```
+native  eth_getBalance     48,985,422,856,585,913,771   (18dp) = 48.985 USDC
+erc20   balanceOf()                     48,985,422      (6dp)  = 48.985 USDC
+```
+
+Several public sources report Arc's native currency as "USDC, 6 decimals". That is wallet display metadata. At 6dp the fee for a 48,950-gas transaction would read as $1.37 billion. `packages/core/src/fixed.ts` makes the lossy direction of that conversion loud rather than silent, and its round-trip test is the first test in the repo.
 
 ### Deploying
 
+Signing uses an encrypted Foundry keystore, so no private key is ever read from the environment or written to disk in the clear.
+
 ```bash
-export ARC_RPC_URL=https://rpc.testnet.arc.network
-export PRIVATE_KEY=...        # fund at faucet.circle.com → Arc Testnet
-export USDC_ADDRESS=...       # USDC ERC-20 on Arc testnet
-forge script script/Deploy.s.sol --rpc-url arc_testnet --broadcast
+cd contracts
+cp .env.example .env          # addresses are pre-filled and verified
+
+# One-time: create the deployer keystore (prompts for a password)
+cast wallet new ~/.foundry/keystores spidey-deployer
+
+# Fund the printed address at faucet.circle.com → Arc Testnet (1 USDC/day)
+
+forge script script/Deploy.s.sol \
+  --rpc-url https://rpc.testnet.arc.network \
+  --account spidey-deployer \
+  --broadcast
 ```
+
+A simulated run against live Arc costs **7,064,561 gas at 41.5 gwei ≈ 0.293 USDC**, so a single faucet claim covers the whole deployment with room to spare.
 
 ## API
 

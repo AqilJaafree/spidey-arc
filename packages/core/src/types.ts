@@ -32,15 +32,40 @@ export type LiquidityHistogramBucket = {
   liquidityUsd: number;
 };
 
-/** CCTP domain ids for the chains this system routes between. */
+/**
+ * CCTP domain ids for the chains this system routes between.
+ *
+ * Arc is 26, confirmed against Circle's published Arc addresses — not a low
+ * number as the hub chain might suggest.
+ */
 export const CCTP_DOMAIN = {
   ethereum: 0,
   avalanche: 1,
   optimism: 2,
   arbitrum: 3,
+  solana: 5,
   base: 6,
   polygon: 7,
-  solana: 5,
+  arc: 26,
+} as const;
+
+/**
+ * Arc testnet, verified directly against the chain rather than taken from
+ * docs — several public sources get the decimals wrong.
+ */
+export const ARC_TESTNET = {
+  chainId: 5042002,
+  rpcUrl: 'https://rpc.testnet.arc.network',
+  cctpDomain: 26,
+  /**
+   * The optional ERC-20 interface over the native USDC balance. Same money,
+   * two interfaces, 1e12 apart: a live account reads 48,985,422,856,585,913,771
+   * natively (18dp) and 48,985,422 through this contract (6dp). That is §7.7's
+   * "documented common integration error" in one line.
+   */
+  usdcErc20: '0x3600000000000000000000000000000000000000',
+  tokenMessengerV2: '0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA',
+  messageTransmitterV2: '0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275',
 } as const;
 
 export type ChainName = keyof typeof CCTP_DOMAIN | (string & {});

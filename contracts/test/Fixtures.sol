@@ -142,7 +142,7 @@ abstract contract Fixtures is Test {
 
     uint16 internal constant VENUE_A = 1; // Arc-local
     uint16 internal constant VENUE_B = 2; // Base
-    uint8 internal constant DOMAIN_ARC = 9;
+    uint8 internal constant DOMAIN_ARC = 26; // verified: Arc's CCTP domain
     uint8 internal constant DOMAIN_BASE = 6;
 
     uint256 internal constant USDC_ONE = 1e6;

@@ -11,11 +11,14 @@ import {ScoreOracle} from "../src/ScoreOracle.sol";
 
 /// @notice Deploys the Arc hub: LPVault + ScoreOracle + Router (§11 Day 2.4).
 ///
-///   forge script script/Deploy.s.sol --rpc-url arc_testnet --broadcast
+///   forge script script/Deploy.s.sol \
+///     --rpc-url arc_testnet --account spidey-deployer --broadcast
+///
+/// Signing comes from the CLI — an encrypted keystore via `--account`, or
+/// `--private-key` — so no key material is read from the environment here.
 ///
 /// Required environment:
 ///   ARC_RPC_URL      https://rpc.testnet.arc.network  (chain 5042002)
-///   PRIVATE_KEY      a key funded from faucet.circle.com (Arc Testnet)
 ///   USDC_ADDRESS     the USDC ERC-20 on Arc testnet
 ///
 /// Optional (each defaults to the deployer):
@@ -27,15 +30,16 @@ import {ScoreOracle} from "../src/ScoreOracle.sol";
 /// reads as 0.1 USDC, and a 48,950-gas fee as $0.00137.
 contract Deploy is Script {
     function run() external {
-        uint256 pk = vm.envUint("PRIVATE_KEY");
-        address deployer = vm.addr(pk);
+        // `--account` / `--private-key` on the CLI decides the sender, so the
+        // deployer is whoever forge is broadcasting as.
+        address deployer = msg.sender;
         IERC20 usdc = IERC20(vm.envAddress("USDC_ADDRESS"));
 
         address reporter = vm.envOr("REPORTER_ADDRESS", deployer);
         address operator = vm.envOr("OPERATOR_ADDRESS", deployer);
         address keeper = vm.envOr("KEEPER_ADDRESS", deployer);
 
-        vm.startBroadcast(pk);
+        vm.startBroadcast();
 
         LPVault vault = new LPVault(usdc, deployer, reporter, operator);
         ScoreOracle oracle = new ScoreOracle(deployer, reporter);
