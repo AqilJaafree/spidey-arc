@@ -68,19 +68,34 @@ Three contracts on Arc, the hub chain where USDC is the native gas asset:
 
 No off-chain party holds a key that can move user funds. The reporter posts scores and NAV; only the Router can move capital, and only when the on-chain payback inequality holds.
 
-### Gas, measured against the spec's budgets
+### Gas: budgets vs. what the chain actually charged
 
-Arc charges gas in USDC, so these are literal cents of user yield. Costed at the 27.95 gwei effective price observed on Arc testnet:
+Arc charges gas in USDC, so these are literal cents of user yield.
 
-| Operation | Used | Budget | | Cost on Arc |
-|---|---:|---:|---:|---:|
-| `deposit` | 40,020 | 90,000 | 44% | $0.0011 |
-| `postScores` | 4,510 | 30,000 | 15% | $0.0001 |
-| `rebalance` (EVM→EVM) | 110,605 | 180,000 | 61% | $0.0031 |
-| `requestWithdraw` | 32,406 | 60,000 | 54% | $0.0009 |
-| `claimWithdraw` | 8,781 | 70,000 | 12% | $0.0002 |
+`contracts/test/GasBudget.t.sol` asserts the spec's targets, so a regression fails the build. But those tests measure **execution gas** via `gasleft()`. A real transaction also pays the 21,000-gas intrinsic cost plus calldata, and — specific to Arc — reads through a USDC contract that is not a normal ERC-20. Both columns below are real:
 
-These are asserted in `contracts/test/GasBudget.t.sol`, so a regression fails the build rather than showing up in a report nobody reads.
+| Operation | Test (execution) | **Measured on Arc** | Budget | Verdict |
+|---|---:|---:|---:|---|
+| `deposit` (first ever, cold) | — | 108,631 | 90,000 | over, one-time |
+| `deposit` (steady state) | 40,035 | **79,227** | 90,000 | **within** |
+| `requestWithdraw` | 32,412 | **79,407** | 60,000 | **over by 32%** |
+| `postScores` | 4,510 | — | 30,000 | within |
+| `rebalance` (EVM→EVM) | 110,605 | — | 180,000 | within |
+| `claimWithdraw` | 8,781 | — | 70,000 | within |
+
+**`requestWithdraw` misses its budget on-chain**, and the reason is worth knowing before setting any other budget on this chain.
+
+Arc's USDC ERC-20 at `0x3600…0000` is a shim over the native balance, not a storage-backed token. Measured on the live chain:
+
+| Call | est. gas | minus 21k intrinsic |
+|---|---:|---:|
+| `deployedAssets()` — pure SLOAD | 23,883 | 2,883 |
+| `idleAssets()` — one `USDC.balanceOf` | 33,477 | 12,477 |
+| `USDC.balanceOf` alone | 32,162 | 11,162 |
+
+A `balanceOf` costs **~11,000 gas on Arc against ~2,100 for a conventional ERC-20** — roughly 5×. Since `totalAssets()` reads it on every deposit, withdrawal request and NAV conversion, that surcharge lands on nearly every call path. The §8.4 targets appear to have been set against normal ERC-20 costs, so they need revisiting for Arc specifically — the honest fix is caching the balance within a call and reducing how often `totalAssets()` is recomputed, not relaxing the number.
+
+At the observed 27.95 gwei, `requestWithdraw` still costs about **$0.0022**, so this is a modelling error rather than a user-facing problem — but §8's whole argument is that these units are countable money, and the count was wrong.
 
 ### The Uniswap v3 strategy, run for real
 
@@ -119,6 +134,21 @@ erc20   balanceOf()                     48,985,422      (6dp)  = 48.985 USDC
 ```
 
 Several public sources report Arc's native currency as "USDC, 6 decimals". That is wallet display metadata. At 6dp the fee for a 48,950-gas transaction would read as $1.37 billion. `packages/core/src/fixed.ts` makes the lossy direction of that conversion loud rather than silent, and its round-trip test is the first test in the repo.
+
+### Deployed on Arc testnet
+
+Live at chain 5042002, deployed and exercised with real funds:
+
+| Contract | Address |
+|---|---|
+| `LPVault` | [`0x9Ddb71D03b0C02B972DcdF029065a81823A6A7F7`](https://rpc.testnet.arc.network) |
+| `ScoreOracle` | `0x29A02e762B3a2Aba5B013f955adfA2617CF58F08` |
+| `Router` | `0x7c66E2d46c533e79d64D60b072849381C8Cb2DCE` |
+| USDC (ERC-20 shim) | `0x3600000000000000000000000000000000000000` |
+
+Deployment cost **0.1169 USDC** across five transactions (3 CREATE + 2 CALL, 5,436,485 gas), against a 0.2937 estimate — real gas priced below the quote.
+
+Verified on-chain after deployment: `asset()` points at USDC, `router()` at the Router, caps set to $100k total / $25k per venue, both venues registered with `activeVenueBitmap = 6` (bits 1 and 2). A real 5 USDC deposit minted 5e9 shares — exactly the 3-decimal virtual-share offset — and a withdrawal request queued correctly.
 
 ### Deploying
 
