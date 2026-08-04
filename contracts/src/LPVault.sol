@@ -71,6 +71,7 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
     event Returned(uint16 indexed venueId, uint256 assets);
     event CapsChanged(uint256 depositCap, uint256 perVenueCap);
     event RoleChanged(bytes32 indexed role, address indexed previous, address indexed next);
+    event IdleSynced(uint256 recovered, uint256 newIdle);
 
     // -----------------------------------------------------------------------
     // Constants
@@ -148,8 +149,26 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
         uint64 epoch;
     }
 
+    /// @notice The two asset aggregates `totalAssets()` needs, in one slot.
+    ///
+    ///         `idle` is TRACKED rather than read from the token. On Arc the
+    ///         USDC ERC-20 at 0x3600…0000 is a shim over the native balance,
+    ///         and a `balanceOf` through it costs ~11,162 gas against ~2,100
+    ///         for a conventional token — measured on the live chain. Since
+    ///         `totalAssets()` is on the deposit, withdrawal-request and NAV
+    ///         paths, that surcharge lands almost everywhere.
+    ///
+    ///         Tracking it also closes the donation vector properly: a direct
+    ///         transfer into the vault no longer moves the share price, so
+    ///         share value cannot be manipulated by sending tokens. See
+    ///         {unaccountedBalance} and {syncIdle} for recovering such funds
+    ///         deliberately.
+    struct Assets {
+        uint128 idle; // USDC the vault holds and has accounted for
+        uint128 pending; // owed to requesters, excluded from equity
+    }
+
     struct WithdrawQueue {
-        uint128 pendingAssets; // owed to requesters, excluded from equity
         uint64 nextRequestId; // starts at 1 (§8.1: never write zero)
         uint16 epoch; // current epoch accepting requests
         uint16 lastSettledEpoch;
@@ -157,6 +176,7 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
 
     Caps public caps;
     Nav public nav;
+    Assets public assets;
     WithdrawQueue public queue;
 
     /// @notice §8.1: "Bitmaps for flags. Active/paused venue sets as a single
@@ -205,7 +225,8 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
 
         // Seed every counter non-zero so the first real write is a warm
         // rewrite rather than a 20,000-gas zero→non-zero SSTORE (§8.1).
-        queue = WithdrawQueue({pendingAssets: 0, nextRequestId: 1, epoch: 1, lastSettledEpoch: 0});
+        queue = WithdrawQueue({nextRequestId: 1, epoch: 1, lastSettledEpoch: 0});
+        assets = Assets({idle: 0, pending: 0});
         nav = Nav({deployedAssets: 0, updatedAt: uint64(block.timestamp), epoch: 1});
         caps = Caps({depositCapAssets: type(uint128).max, perVenueCapAssets: type(uint128).max});
     }
@@ -224,7 +245,29 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
     /// @notice Idle USDC sitting in the vault, including assets already
     ///         earmarked for pending withdrawals.
     function idleAssets() public view returns (uint256) {
-        return IERC20(asset()).balanceOf(address(this));
+        return assets.idle;
+    }
+
+    /// @notice USDC sitting in the vault that has not been accounted for —
+    ///         donations, or an executor return that skipped `recordReturn`.
+    /// @dev Deliberately excluded from `totalAssets()` until {syncIdle} folds
+    ///      it in, so nobody can move the share price by sending tokens.
+    function unaccountedBalance() public view returns (uint256) {
+        uint256 held = IERC20(asset()).balanceOf(address(this));
+        uint256 tracked = assets.idle;
+        unchecked {
+            return held > tracked ? held - tracked : 0;
+        }
+    }
+
+    /// @notice Fold unaccounted balance into vault equity. Owner-only, because
+    ///         it moves the share price.
+    function syncIdle() external onlyOwner returns (uint256 recovered) {
+        recovered = unaccountedBalance();
+        if (recovered > 0) {
+            assets.idle += uint128(recovered);
+            emit IdleSynced(recovered, assets.idle);
+        }
     }
 
     /// @notice Reported assets deployed to venues, aggregate.
@@ -238,10 +281,15 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
     ///      payout at the rate current when it was made. Leaving them in would
     ///      credit remaining holders with assets that are no longer theirs.
     function totalAssets() public view override returns (uint256) {
-        uint256 gross = idleAssets() + nav.deployedAssets;
-        uint256 pending = queue.pendingAssets;
+        return _equity(assets, nav.deployedAssets); // one SLOAD for both aggregates
+    }
+
+    /// @dev Shareholder equity from already-loaded state, so callers that
+    ///      have the slot in memory do not pay to read it twice.
+    function _equity(Assets memory a, uint256 deployed) private pure returns (uint256) {
+        uint256 gross = uint256(a.idle) + deployed;
         unchecked {
-            return gross > pending ? gross - pending : 0;
+            return gross > a.pending ? gross - a.pending : 0;
         }
     }
 
@@ -254,7 +302,7 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
     ///      would hit it through both `maxDeposit` and `previewDeposit`; this
     ///      override reads it once and reuses the value for the cap check and
     ///      the share conversion.
-    function deposit(uint256 assets, address receiver)
+    function deposit(uint256 amount, address receiver)
         public
         override
         nonReentrant
@@ -262,32 +310,43 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
     {
         uint256 total = totalAssets();
         uint256 cap = caps.depositCapAssets;
-        if (total + assets > cap) revert DepositCapExceeded(total + assets, cap);
+        if (total + amount > cap) revert DepositCapExceeded(total + amount, cap);
 
-        shares = _convertToSharesCached(assets, total, Math.Rounding.Floor);
+        shares = _convertToSharesCached(amount, total, Math.Rounding.Floor);
         if (shares == 0) revert ZeroShares();
-        _deposit(msg.sender, receiver, assets, shares);
+        _deposit(msg.sender, receiver, amount, shares);
     }
 
     function mint(uint256 shares, address receiver)
         public
         override
         nonReentrant
-        returns (uint256 assets)
+        returns (uint256 amount)
     {
         uint256 total = totalAssets();
-        assets = _convertToAssetsCached(shares, total, Math.Rounding.Ceil);
+        amount = _convertToAssetsCached(shares, total, Math.Rounding.Ceil);
         uint256 cap = caps.depositCapAssets;
-        if (total + assets > cap) revert DepositCapExceeded(total + assets, cap);
-        _deposit(msg.sender, receiver, assets, shares);
+        if (total + amount > cap) revert DepositCapExceeded(total + amount, cap);
+        _deposit(msg.sender, receiver, amount, shares);
     }
 
-    function _convertToSharesCached(uint256 assets, uint256 total, Math.Rounding rounding)
+    /// @dev Every inbound transfer goes through here, so this is the single
+    ///      place tracked idle needs to grow.
+    function _deposit(address caller, address receiver, uint256 amount, uint256 shares)
+        internal
+        override
+    {
+        super._deposit(caller, receiver, amount, shares);
+        // forge-lint: disable-next-line(unsafe-typecast)
+        assets.idle = assets.idle + uint128(amount);
+    }
+
+    function _convertToSharesCached(uint256 assets_, uint256 total, Math.Rounding rounding)
         private
         view
         returns (uint256)
     {
-        return assets.mulDiv(totalSupply() + 10 ** _decimalsOffset(), total + 1, rounding);
+        return assets_.mulDiv(totalSupply() + 10 ** _decimalsOffset(), total + 1, rounding);
     }
 
     function _convertToAssetsCached(uint256 shares, uint256 total, Math.Rounding rounding)
@@ -344,8 +403,12 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
     function requestWithdraw(uint256 shares) external nonReentrant returns (uint256 requestId) {
         if (shares == 0) revert ZeroShares();
 
-        uint256 assets = previewRedeemShares(shares);
-        if (assets > MAX_REQUEST_ASSETS) revert AmountTooLarge();
+        // One SLOAD serves both the conversion below and the pending update.
+        Assets memory a = assets;
+        uint256 owed = _convertToAssetsCached(
+            shares, _equity(a, nav.deployedAssets), Math.Rounding.Floor
+        );
+        if (owed > MAX_REQUEST_ASSETS) revert AmountTooLarge();
 
         _burn(msg.sender, shares);
 
@@ -356,29 +419,28 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
             owner: msg.sender,
             // safe: bounded by the MAX_REQUEST_ASSETS check above
             // forge-lint: disable-next-line(unsafe-typecast)
-            assets: uint72(assets),
+            assets: uint72(owed),
             epoch: q.epoch,
             flags: 0
         });
 
-        // Deliberately CHECKED. `pendingAssets` aggregates every outstanding
+        // Deliberately CHECKED. `pending` aggregates every outstanding
         // request, so unlike the per-request cast above it has no bound that
         // makes the addition provably safe. §8.2 licenses `unchecked` only for
         // "provably-safe arithmetic"; this is not that.
         // forge-lint: disable-next-line(unsafe-typecast)
-        uint128 newPending = q.pendingAssets + uint128(assets);
+        assets.pending = a.pending + uint128(owed);
 
         unchecked {
             // A uint64 request counter cannot realistically overflow.
             queue = WithdrawQueue({
-                pendingAssets: newPending,
                 nextRequestId: q.nextRequestId + 1,
                 epoch: q.epoch,
                 lastSettledEpoch: q.lastSettledEpoch
             });
         }
 
-        emit WithdrawRequested(requestId, msg.sender, shares, assets, q.epoch);
+        emit WithdrawRequested(requestId, msg.sender, shares, owed, q.epoch);
     }
 
     /// @notice Assets a share count would fetch right now.
@@ -395,17 +457,16 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
         settled = q.epoch;
         unchecked {
             queue = WithdrawQueue({
-                pendingAssets: q.pendingAssets,
                 nextRequestId: q.nextRequestId,
                 epoch: q.epoch + 1,
                 lastSettledEpoch: settled
             });
         }
-        emit EpochSettled(settled, q.pendingAssets, idleAssets());
+        emit EpochSettled(settled, assets.pending, assets.idle);
     }
 
     /// @notice Collect a settled withdrawal.
-    function claimWithdraw(uint256 requestId) external nonReentrant returns (uint256 assets) {
+    function claimWithdraw(uint256 requestId) external nonReentrant returns (uint256 owed) {
         WithdrawRequest memory request = withdrawRequests[requestId];
 
         if (request.owner != msg.sender) revert NotRequestOwner(requestId);
@@ -414,22 +475,25 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
         uint16 lastSettled = queue.lastSettledEpoch;
         if (request.epoch > lastSettled) revert EpochNotSettled(request.epoch, lastSettled);
 
-        assets = request.assets;
-        uint256 idle = idleAssets();
-        if (idle < assets) revert InsufficientIdle(assets, idle);
+        owed = request.assets;
+        uint256 idle = assets.idle;
+        if (idle < owed) revert InsufficientIdle(owed, idle);
 
         // Mark claimed before transferring. The transient guard already blocks
         // reentrancy; this keeps the invariant true even without it.
         withdrawRequests[requestId].flags = request.flags | REQUEST_FLAG_CLAIMED;
         unchecked {
             // safe: this exact amount was added by requestWithdraw, and the
-            // claimed flag above makes a second subtraction impossible
+            // claimed flag above makes a second subtraction impossible. Both
+            // fields share a slot, so this is a single warm rewrite.
             // forge-lint: disable-next-line(unsafe-typecast)
-            queue.pendingAssets -= uint128(assets);
+            assets.pending -= uint128(owed);
+            // forge-lint: disable-next-line(unsafe-typecast)
+            assets.idle -= uint128(owed);
         }
 
-        IERC20(asset()).safeTransfer(request.owner, assets);
-        emit WithdrawClaimed(requestId, request.owner, assets);
+        IERC20(asset()).safeTransfer(request.owner, owed);
+        emit WithdrawClaimed(requestId, request.owner, owed);
     }
 
     // -----------------------------------------------------------------------
@@ -514,12 +578,12 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
     /// @notice Move idle capital into a venue. Router-only.
     /// @dev The per-venue cap here is what stops the vault "becoming the
     ///      dilution problem it is designed to detect" (§5.1).
-    function recordDeploy(uint16 venueId, uint256 assets, uint32 scoreBps) external onlyRouter {
+    function recordDeploy(uint16 venueId, uint256 amount, uint32 scoreBps) external onlyRouter {
         VenueState memory venue = venues[venueId];
         if (venue.flags & FLAG_ACTIVE == 0) revert VenueInactive(venueId);
         if (venue.flags & FLAG_PAUSED != 0) revert VenuePaused(venueId);
 
-        uint256 next = uint256(venue.deployedAssets) + assets;
+        uint256 next = uint256(venue.deployedAssets) + amount;
         uint256 cap = caps.perVenueCapAssets;
         if (next > cap) revert VenueCapExceeded(venueId, next, cap);
         if (next > type(uint128).max) revert AmountTooLarge();
@@ -539,20 +603,20 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
         // `nav.deployedAssets` sums across up to 256 venues, so the aggregate
         // can exceed any single venue's bound.
         // forge-lint: disable-next-line(unsafe-typecast)
-        nav.deployedAssets = nav.deployedAssets + uint128(assets);
-        emit Deployed(venueId, assets);
+        nav.deployedAssets = nav.deployedAssets + uint128(amount);
+        emit Deployed(venueId, amount);
     }
 
     /// @notice Record capital coming back from a venue. Router-only.
-    function recordReturn(uint16 venueId, uint256 assets) external onlyRouter {
+    function recordReturn(uint16 venueId, uint256 amount) external onlyRouter {
         VenueState memory venue = venues[venueId];
-        if (assets > venue.deployedAssets) revert InsufficientIdle(assets, venue.deployedAssets);
+        if (amount > venue.deployedAssets) revert InsufficientIdle(amount, venue.deployedAssets);
 
         unchecked {
             venues[venueId] = VenueState({
-                // safe: `assets <= venue.deployedAssets` checked above
+                // safe: `amount <= venue.deployedAssets` checked above
                 // forge-lint: disable-next-line(unsafe-typecast)
-                deployedAssets: venue.deployedAssets - uint128(assets),
+                deployedAssets: venue.deployedAssets - uint128(amount),
                 lastRebalanceAt: uint64(block.timestamp),
                 scoreBps: venue.scoreBps,
                 venueId: venue.venueId,
@@ -560,25 +624,33 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
                 flags: venue.flags
             });
             // safe: the aggregate is the sum of per-venue balances, so it is
-            // always at least `venue.deployedAssets`, itself >= `assets`
+            // always at least `venue.deployedAssets`, itself >= `amount`
             // forge-lint: disable-next-line(unsafe-typecast)
-            nav.deployedAssets -= uint128(assets);
+            nav.deployedAssets -= uint128(amount);
         }
-        emit Returned(venueId, assets);
+        // The executor transfers tokens back directly, so credit tracked idle
+        // here. Without this the returned capital would sit as an unaccounted
+        // balance and drop out of `totalAssets()`.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        assets.idle = assets.idle + uint128(amount);
+        emit Returned(venueId, amount);
     }
 
     /// @notice Send idle USDC out to a venue executor. Router-only.
     /// @dev Kept separate from `recordDeploy` so accounting and token movement
     ///      can be reasoned about independently, and so a cross-chain leg can
     ///      record the deploy before the tokens have actually landed.
-    function transferToExecutor(address executor, uint256 assets) external onlyRouter nonReentrant {
+    function transferToExecutor(address executor, uint256 amount) external onlyRouter nonReentrant {
         if (executor == address(0)) revert ZeroAddress();
-        uint256 available = idleAssets();
-        uint256 reserved = queue.pendingAssets;
+        Assets memory a = assets;
+        uint256 available = a.idle;
+        uint256 reserved = a.pending;
         // Never spend assets already promised to withdrawal requesters.
         uint256 spendable = available > reserved ? available - reserved : 0;
-        if (assets > spendable) revert InsufficientIdle(assets, spendable);
-        IERC20(asset()).safeTransfer(executor, assets);
+        if (amount > spendable) revert InsufficientIdle(amount, spendable);
+        // forge-lint: disable-next-line(unsafe-typecast)
+        assets.idle = a.idle - uint128(amount);
+        IERC20(asset()).safeTransfer(executor, amount);
     }
 
     // -----------------------------------------------------------------------

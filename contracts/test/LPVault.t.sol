@@ -258,7 +258,8 @@ contract LPVaultTest is Fixtures {
     // -----------------------------------------------------------------------
 
     function _queue() private view returns (uint256, uint128, uint64, uint16) {
-        (uint128 pending, uint64 nextId, uint16 epoch, uint16 settled) = vault.queue();
+        (uint64 nextId, uint16 epoch, uint16 settled) = vault.queue();
+        (, uint128 pending) = vault.assets();
         return (settled, pending, nextId, epoch);
     }
 

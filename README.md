@@ -76,9 +76,9 @@ Arc charges gas in USDC, so these are literal cents of user yield.
 
 | Operation | Test (execution) | **Measured on Arc** | Budget | Verdict |
 |---|---:|---:|---:|---|
-| `deposit` (first ever, cold) | — | 108,631 | 90,000 | over, one-time |
-| `deposit` (steady state) | 40,035 | **79,227** | 90,000 | **within** |
-| `requestWithdraw` | 32,412 | **79,407** | 60,000 | **over by 32%** |
+| `deposit` (first ever, cold) | — | 132,111 | 90,000 | over, one-time |
+| `deposit` (steady state) | 39,693 | **80,807** | 90,000 | **within** |
+| `requestWithdraw` | 31,038 | **72,955** | 60,000 | **over by 22%** |
 | `postScores` | 4,510 | — | 30,000 | within |
 | `rebalance` (EVM→EVM) | 110,605 | — | 180,000 | within |
 | `claimWithdraw` | 8,781 | — | 70,000 | within |
@@ -93,9 +93,42 @@ Arc's USDC ERC-20 at `0x3600…0000` is a shim over the native balance, not a st
 | `idleAssets()` — one `USDC.balanceOf` | 33,477 | 12,477 |
 | `USDC.balanceOf` alone | 32,162 | 11,162 |
 
-A `balanceOf` costs **~11,000 gas on Arc against ~2,100 for a conventional ERC-20** — roughly 5×. Since `totalAssets()` reads it on every deposit, withdrawal request and NAV conversion, that surcharge lands on nearly every call path. The §8.4 targets appear to have been set against normal ERC-20 costs, so they need revisiting for Arc specifically — the honest fix is caching the balance within a call and reducing how often `totalAssets()` is recomputed, not relaxing the number.
+A `balanceOf` costs **~11,000 gas on Arc against ~2,100 for a conventional ERC-20** — roughly 5×.
 
-At the observed 27.95 gwei, `requestWithdraw` still costs about **$0.0022**, so this is a modelling error rather than a user-facing problem — but §8's whole argument is that these units are countable money, and the count was wrong.
+#### What was done about it
+
+Caching `totalAssets()` within a call was the obvious fix and turns out to be worthless: instrumenting the vault showed `balanceOf` is already called **exactly once** per deposit and per withdrawal request. There was no repetition to remove. The cost was one read that is simply expensive.
+
+So `idle` is now tracked in vault storage instead of read from the token, and the hot paths never touch the shim. A test asserts zero `balanceOf` reads on both paths, since a regression there silently adds ~11,000 gas.
+
+Measured on live Arc, before and after:
+
+| Operation | before | after | Δ |
+|---|---:|---:|---:|
+| `requestWithdraw` | 79,407 | **72,955** | −6,452 |
+| `deposit` (steady) | 79,227 | 80,807 | +1,580 |
+
+The saving is smaller than the 11,162 removed because moving `pending` out of the queue slot added a second slot access back; `deposit` pays slightly more because it now writes the tracked balance. Packing all of it into one slot would recover a further ~5,000.
+
+**It still misses the budget, and it cannot meet it as designed.** The floor for any operation that writes one fresh storage slot:
+
+```
+intrinsic transaction                21,000
+new request slot (0 -> non-zero)     22,100
+_burn: holder + totalSupply          10,000
+one packed state slot                 5,000
+event                                 2,000
+                                     ------
+                                     60,100   > 60,000 budget
+```
+
+Meeting 60,000 requires a structural change, not more micro-optimization — merging a user's requests within an epoch into one slot, so only their first request pays the 22,100 cold write. That changes withdrawal semantics and has not been done.
+
+At 27.95 gwei this is **$0.0020 per request**, so it is a modelling error rather than a user-facing problem. But §8's whole argument is that these units are countable money, and the count was wrong.
+
+#### A side effect worth having
+
+Tracking `idle` closes the ERC-4626 donation vector outright. Share price is computed from accounted assets, so sending tokens to the vault no longer moves it — verified on-chain: a live 1 USDC donation left `totalAssets` unchanged and surfaced as `unaccountedBalance`. `syncIdle()` folds such balances in deliberately, owner-only. Previously this relied on the virtual-share offset alone.
 
 ### The Uniswap v3 strategy, run for real
 
@@ -141,9 +174,9 @@ Live at chain 5042002, deployed and exercised with real funds:
 
 | Contract | Address |
 |---|---|
-| `LPVault` | [`0x9Ddb71D03b0C02B972DcdF029065a81823A6A7F7`](https://rpc.testnet.arc.network) |
-| `ScoreOracle` | `0x29A02e762B3a2Aba5B013f955adfA2617CF58F08` |
-| `Router` | `0x7c66E2d46c533e79d64D60b072849381C8Cb2DCE` |
+| `LPVault` | `0x96Ad78E2E30960BA22dd1aABF73764BA804DA65D` |
+| `ScoreOracle` | `0x7C8bD7d04e4D20D513d1B3312641f6F054c33325` |
+| `Router` | `0x4f581A4cEb0c1448f1eC60410b01953D8d5DC184` |
 | USDC (ERC-20 shim) | `0x3600000000000000000000000000000000000000` |
 
 Deployment cost **0.1169 USDC** across five transactions (3 CREATE + 2 CALL, 5,436,485 gas), against a 0.2937 estimate — real gas priced below the quote.
