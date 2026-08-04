@@ -1,0 +1,23 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.next/
+out/
+.env
+.env.local
+.DS_Store
+coverage/
+.vitest/
+
+# Foundry (day 2)
+cache/
+broadcast/
+
+# Anchor (day 3)
+target/
+test-ledger/
+
+# Local-only docs (untracked deliberately; README.md is the committed one)
+brand.md
+usdc-lp-vault-spec.md
+docs/
