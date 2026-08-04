@@ -69,7 +69,7 @@ contract LPVaultTest is Fixtures {
         vault.claimWithdraw(id);
 
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(LPVault.AlreadyClaimed.selector, id));
+        vm.expectRevert(abi.encodeWithSelector(LPVault.NothingToClaim.selector, alice));
         vault.claimWithdraw(id);
     }
 
@@ -83,6 +83,11 @@ contract LPVaultTest is Fixtures {
         vm.prank(bob);
         vm.expectRevert(abi.encodeWithSelector(LPVault.NotRequestOwner.selector, id));
         vault.claimWithdraw(id);
+        // ...and bob cannot forge an id for himself either: he has nothing.
+        uint256 bobId = vault.encodeRequestId(bob, 1);
+        vm.prank(bob);
+        vm.expectRevert(abi.encodeWithSelector(LPVault.NothingToClaim.selector, bob));
+        vault.claimWithdraw(bobId);
     }
 
     /// @dev The reason the queue exists at all (§10.2: "Withdrawal exceeds
@@ -104,6 +109,83 @@ contract LPVaultTest is Fixtures {
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(LPVault.InsufficientIdle.selector, assets, 0));
         vault.claimWithdraw(id);
+    }
+
+    // -----------------------------------------------------------------------
+    // One outstanding request per holder (the §8.4 gas structure)
+    // -----------------------------------------------------------------------
+
+    /// @dev Two requests in the same epoch merge into one record, which is
+    ///      what keeps the second one a 5,000-gas rewrite instead of a
+    ///      22,100-gas cold write.
+    function test_secondRequestInSameEpochMergesIntoTheFirst() public {
+        uint256 shares = depositAs(alice, 1_000 * USDC_ONE);
+
+        vm.prank(alice);
+        uint256 first = vault.requestWithdraw(shares / 2);
+        vm.prank(alice);
+        uint256 second = vault.requestWithdraw(shares / 2);
+
+        assertEq(first, second, "same epoch yields the same request id");
+
+        (uint128 owed, uint16 epoch,) = vault.pendingOf(alice);
+        assertEq(owed, 1_000 * USDC_ONE, "both requests are owed together");
+        assertEq(epoch, 1, "still epoch 1");
+
+        vm.prank(operator);
+        vault.settleEpoch();
+        vm.prank(alice);
+        assertEq(vault.claimWithdraw(first), 1_000 * USDC_ONE, "one claim pays both");
+    }
+
+    /// @dev A settled-but-unclaimed request must be collected before opening
+    ///      a new one, so a claim can never be silently overwritten.
+    function test_cannotOpenANewRequestWhileAnOlderOneIsUnclaimed() public {
+        uint256 shares = depositAs(alice, 1_000 * USDC_ONE);
+
+        vm.prank(alice);
+        vault.requestWithdraw(shares / 2);
+        vm.prank(operator);
+        vault.settleEpoch(); // epoch 1 settled, alice has not claimed
+
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(LPVault.ClaimPendingFirst.selector, 1, 2));
+        vault.requestWithdraw(shares / 4);
+    }
+
+    function test_newRequestAllowedOnceTheOldOneIsClaimed() public {
+        uint256 shares = depositAs(alice, 1_000 * USDC_ONE);
+
+        vm.prank(alice);
+        uint256 id = vault.requestWithdraw(shares / 2);
+        vm.prank(operator);
+        vault.settleEpoch();
+        vm.prank(alice);
+        vault.claimWithdraw(id);
+
+        // The slot keeps its INITIALIZED bit, so this is a cheap rewrite.
+        (uint128 owed,, uint8 flags) = vault.pendingOf(alice);
+        assertEq(owed, 0, "nothing outstanding");
+        assertTrue(flags != 0, "slot must stay non-zero for the gas structure");
+
+        vm.prank(alice);
+        uint256 next = vault.requestWithdraw(shares / 4);
+        assertTrue(next != id, "a new epoch yields a new id");
+    }
+
+    function test_requestIdRoundTrips() public view {
+        uint256 id = vault.encodeRequestId(alice, 7);
+        (address holder, uint16 epoch) = vault.decodeRequestId(id);
+        assertEq(holder, alice, "holder survives the round trip");
+        assertEq(epoch, 7, "epoch survives the round trip");
+    }
+
+    function testFuzz_requestIdRoundTrips(address holder, uint16 epoch) public view {
+        (address gotHolder, uint16 gotEpoch) = vault.decodeRequestId(
+            vault.encodeRequestId(holder, epoch)
+        );
+        assertEq(gotHolder, holder);
+        assertEq(gotEpoch, epoch);
     }
 
     // -----------------------------------------------------------------------
@@ -258,9 +340,9 @@ contract LPVaultTest is Fixtures {
     // -----------------------------------------------------------------------
 
     function _queue() private view returns (uint256, uint128, uint64, uint16) {
-        (uint64 nextId, uint16 epoch, uint16 settled) = vault.queue();
+        (uint16 epoch, uint16 settled) = vault.queue();
         (, uint128 pending) = vault.assets();
-        return (settled, pending, nextId, epoch);
+        return (settled, pending, 0, epoch);
     }
 
     function _deployForNav(uint256 assets) private {

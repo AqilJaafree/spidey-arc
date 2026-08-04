@@ -144,6 +144,49 @@ contract BalanceReadsTest is Test {
         assertEq(vault.unaccountedBalance(), 0, "nothing left unaccounted");
     }
 
+    /// @dev The gap this closes: a donation into a vault with no shares
+    ///      outstanding was previously unreachable.
+    function test_rescueRecoversDonationEvenWithNoSharesOutstanding() public {
+        vm.prank(alice);
+        IERC20(address(usdc)).transfer(address(vault), 1_000 * USDC_ONE);
+        assertEq(vault.totalSupply(), 0, "no shares outstanding");
+
+        uint256 before = IERC20(address(usdc)).balanceOf(owner);
+        vm.prank(owner);
+        uint256 rescued = vault.rescueUnaccounted(owner);
+
+        assertEq(rescued, 1_000 * USDC_ONE, "rescued the donation");
+        assertEq(IERC20(address(usdc)).balanceOf(owner) - before, rescued, "funds delivered");
+        assertEq(vault.unaccountedBalance(), 0, "nothing left stranded");
+    }
+
+    /// @dev Rescue must never be able to reach depositor assets.
+    function testFuzz_rescueCannotTouchAccountedAssets(uint96 rawDeposit, uint96 rawDonation)
+        public
+    {
+        uint256 deposited = bound(uint256(rawDeposit), USDC_ONE, 100_000 * USDC_ONE);
+        uint256 donated = bound(uint256(rawDonation), 0, 100_000 * USDC_ONE);
+
+        vm.prank(alice);
+        vault.deposit(deposited, alice);
+        if (donated > 0) {
+            vm.prank(alice);
+            IERC20(address(usdc)).transfer(address(vault), donated);
+        }
+
+        uint256 equityBefore = vault.totalAssets();
+        vm.prank(owner);
+        uint256 rescued = vault.rescueUnaccounted(owner);
+
+        assertEq(rescued, donated, "rescue is bounded to the donation");
+        assertEq(vault.totalAssets(), equityBefore, "depositor equity untouched");
+        assertGe(
+            IERC20(address(usdc)).balanceOf(address(vault)),
+            vault.idleAssets(),
+            "vault still covers its tracked idle"
+        );
+    }
+
     function test_onlyOwnerMaySyncIdle() public {
         vm.prank(alice);
         IERC20(address(usdc)).transfer(address(vault), USDC_ONE);

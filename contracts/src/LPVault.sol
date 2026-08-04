@@ -50,8 +50,9 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
     error VenuePaused(uint16 venueId);
     error VenueAlreadyRegistered(uint16 venueId);
     error EpochNotSettled(uint16 requestEpoch, uint16 lastSettled);
-    error AlreadyClaimed(uint256 requestId);
+    error NothingToClaim(address holder);
     error NotRequestOwner(uint256 requestId);
+    error ClaimPendingFirst(uint16 pendingEpoch, uint16 currentEpoch);
     error AmountTooLarge();
     error ZeroShares();
 
@@ -72,6 +73,7 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
     event CapsChanged(uint256 depositCap, uint256 perVenueCap);
     event RoleChanged(bytes32 indexed role, address indexed previous, address indexed next);
     event IdleSynced(uint256 recovered, uint256 newIdle);
+    event UnaccountedRescued(address indexed to, uint256 amount);
 
     // -----------------------------------------------------------------------
     // Constants
@@ -101,7 +103,8 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
     uint8 public constant FLAG_PAUSED = 1 << 1;
     uint8 public constant FLAG_PENDING_HOOK = 1 << 2;
 
-    uint8 private constant REQUEST_FLAG_CLAIMED = 1 << 0;
+    /// @dev Set on a holder's first request, never cleared (§8.1).
+    uint8 private constant REQUEST_FLAG_INITIALIZED = 1 << 0;
 
     // -----------------------------------------------------------------------
     // Roles
@@ -130,12 +133,28 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
         uint8 flags; // bit 0 active, bit 1 paused, bit 2 pendingHook
     }
 
-    /// @dev One slot: 160 + 72 + 16 + 8 = 256 bits.
-    struct WithdrawRequest {
-        address owner;
-        uint72 assets; // fixed at request time, USDC 6dp
-        uint16 epoch;
-        uint8 flags; // bit 0 claimed
+    /// @notice One outstanding withdrawal per holder, in one slot.
+    ///
+    ///         Keying by holder rather than by an incrementing request id is
+    ///         what brings `requestWithdraw` inside its §8.4 budget. A fresh
+    ///         slot per request costs 22,100 gas every single time (zero →
+    ///         non-zero); a slot per holder costs that once and 5,000
+    ///         thereafter.
+    ///
+    ///         `flags` carries an INITIALIZED bit that is set on the first
+    ///         request and never cleared, so the word stays non-zero even
+    ///         when nothing is owed. That is §8.1's own instruction — "Never
+    ///         write zero. Initialize counters to 1, not 0, and treat 1 as
+    ///         empty" — applied to the withdrawal record.
+    ///
+    ///         The trade-off: a holder has at most one outstanding request.
+    ///         A second request in the same epoch adds to it; a request while
+    ///         an older settled one is unclaimed is rejected, so a claim can
+    ///         never be silently overwritten.
+    struct PendingWithdrawal {
+        uint128 assets; // 0 = nothing outstanding
+        uint16 epoch; // the epoch this belongs to
+        uint8 flags; // bit 0 = initialized (keeps the slot non-zero)
     }
 
     struct Caps {
@@ -169,7 +188,6 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
     }
 
     struct WithdrawQueue {
-        uint64 nextRequestId; // starts at 1 (§8.1: never write zero)
         uint16 epoch; // current epoch accepting requests
         uint16 lastSettledEpoch;
     }
@@ -186,7 +204,7 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
     uint256 public pausedVenueBitmap;
 
     mapping(uint16 venueId => VenueState) public venues;
-    mapping(uint256 requestId => WithdrawRequest) public withdrawRequests;
+    mapping(address holder => PendingWithdrawal) public pendingOf;
 
     // -----------------------------------------------------------------------
     // Modifiers
@@ -225,7 +243,7 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
 
         // Seed every counter non-zero so the first real write is a warm
         // rewrite rather than a 20,000-gas zero→non-zero SSTORE (§8.1).
-        queue = WithdrawQueue({nextRequestId: 1, epoch: 1, lastSettledEpoch: 0});
+        queue = WithdrawQueue({epoch: 1, lastSettledEpoch: 0});
         assets = Assets({idle: 0, pending: 0});
         nav = Nav({deployedAssets: 0, updatedAt: uint64(block.timestamp), epoch: 1});
         caps = Caps({depositCapAssets: type(uint128).max, perVenueCapAssets: type(uint128).max});
@@ -258,6 +276,20 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
         unchecked {
             return held > tracked ? held - tracked : 0;
         }
+    }
+
+    /// @notice Send unaccounted balance somewhere, without crediting equity.
+    /// @dev Bounded to {unaccountedBalance}, so it can never reach depositor
+    ///      assets. Without it, tokens sent to a vault with no shares
+    ///      outstanding are unreachable: {syncIdle} would credit equity that
+    ///      nobody holds a claim on. Found the hard way on testnet — a 1 USDC
+    ///      donation into a superseded deployment had no exit.
+    function rescueUnaccounted(address to) external onlyOwner returns (uint256 amount) {
+        if (to == address(0)) revert ZeroAddress();
+        amount = unaccountedBalance();
+        if (amount == 0) return 0;
+        IERC20(asset()).safeTransfer(to, amount);
+        emit UnaccountedRescued(to, amount);
     }
 
     /// @notice Fold unaccounted balance into vault equity. Owner-only, because
@@ -403,7 +435,17 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
     function requestWithdraw(uint256 shares) external nonReentrant returns (uint256 requestId) {
         if (shares == 0) revert ZeroShares();
 
-        // One SLOAD serves both the conversion below and the pending update.
+        WithdrawQueue memory q = queue;
+        PendingWithdrawal memory p = pendingOf[msg.sender];
+
+        // A settled-but-unclaimed request from an earlier epoch must be
+        // collected first — merging it into a new epoch would move money
+        // between settlement batches, and overwriting it would lose a claim.
+        if (p.assets != 0 && p.epoch != q.epoch) {
+            revert ClaimPendingFirst(p.epoch, q.epoch);
+        }
+
+        // One SLOAD serves both the conversion and the pending update.
         Assets memory a = assets;
         uint256 owed = _convertToAssetsCached(
             shares, _equity(a, nav.deployedAssets), Math.Rounding.Floor
@@ -412,35 +454,37 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
 
         _burn(msg.sender, shares);
 
-        WithdrawQueue memory q = queue;
-        requestId = q.nextRequestId;
-
-        withdrawRequests[requestId] = WithdrawRequest({
-            owner: msg.sender,
-            // safe: bounded by the MAX_REQUEST_ASSETS check above
-            // forge-lint: disable-next-line(unsafe-typecast)
-            assets: uint72(owed),
+        // Rewrite, never clear: the INITIALIZED bit keeps this word non-zero
+        // for the life of the vault, so only a holder's first request pays
+        // the 22,100-gas cold write.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        uint128 newPending = p.assets + uint128(owed);
+        pendingOf[msg.sender] = PendingWithdrawal({
+            assets: newPending,
             epoch: q.epoch,
-            flags: 0
+            flags: p.flags | REQUEST_FLAG_INITIALIZED
         });
 
         // Deliberately CHECKED. `pending` aggregates every outstanding
-        // request, so unlike the per-request cast above it has no bound that
-        // makes the addition provably safe. §8.2 licenses `unchecked` only for
-        // "provably-safe arithmetic"; this is not that.
+        // request, so unlike the per-holder cast above it has no bound that
+        // makes the addition provably safe.
         // forge-lint: disable-next-line(unsafe-typecast)
         assets.pending = a.pending + uint128(owed);
 
-        unchecked {
-            // A uint64 request counter cannot realistically overflow.
-            queue = WithdrawQueue({
-                nextRequestId: q.nextRequestId + 1,
-                epoch: q.epoch,
-                lastSettledEpoch: q.lastSettledEpoch
-            });
-        }
-
+        requestId = encodeRequestId(msg.sender, q.epoch);
         emit WithdrawRequested(requestId, msg.sender, shares, owed, q.epoch);
+    }
+
+    /// @notice The request id for a holder in an epoch.
+    /// @dev Derived, never stored — storing it would cost a slot to convey
+    ///      information both sides already have.
+    function encodeRequestId(address holder, uint16 epoch) public pure returns (uint256) {
+        return (uint256(uint160(holder)) << 16) | uint256(epoch);
+    }
+
+    function decodeRequestId(uint256 requestId) public pure returns (address holder, uint16 epoch) {
+        holder = address(uint160(requestId >> 16));
+        epoch = uint16(requestId);
     }
 
     /// @notice Assets a share count would fetch right now.
@@ -456,44 +500,45 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
         WithdrawQueue memory q = queue;
         settled = q.epoch;
         unchecked {
-            queue = WithdrawQueue({
-                nextRequestId: q.nextRequestId,
-                epoch: q.epoch + 1,
-                lastSettledEpoch: settled
-            });
+            queue = WithdrawQueue({epoch: q.epoch + 1, lastSettledEpoch: settled});
         }
         emit EpochSettled(settled, assets.pending, assets.idle);
     }
 
     /// @notice Collect a settled withdrawal.
+    /// @param requestId As returned by {requestWithdraw}. It encodes the
+    ///        holder and epoch, so no per-request storage is needed to
+    ///        validate it.
     function claimWithdraw(uint256 requestId) external nonReentrant returns (uint256 owed) {
-        WithdrawRequest memory request = withdrawRequests[requestId];
+        (address holder, uint16 epoch) = decodeRequestId(requestId);
+        if (holder != msg.sender) revert NotRequestOwner(requestId);
 
-        if (request.owner != msg.sender) revert NotRequestOwner(requestId);
-        if (request.flags & REQUEST_FLAG_CLAIMED != 0) revert AlreadyClaimed(requestId);
+        PendingWithdrawal memory p = pendingOf[msg.sender];
+        if (p.assets == 0 || p.epoch != epoch) revert NothingToClaim(msg.sender);
 
         uint16 lastSettled = queue.lastSettledEpoch;
-        if (request.epoch > lastSettled) revert EpochNotSettled(request.epoch, lastSettled);
+        if (p.epoch > lastSettled) revert EpochNotSettled(p.epoch, lastSettled);
 
-        owed = request.assets;
-        uint256 idle = assets.idle;
-        if (idle < owed) revert InsufficientIdle(owed, idle);
+        owed = p.assets;
+        Assets memory a = assets;
+        if (a.idle < owed) revert InsufficientIdle(owed, a.idle);
 
-        // Mark claimed before transferring. The transient guard already blocks
-        // reentrancy; this keeps the invariant true even without it.
-        withdrawRequests[requestId].flags = request.flags | REQUEST_FLAG_CLAIMED;
+        // Zero the amount but KEEP the initialized bit, so the slot stays
+        // non-zero and this holder's next request is a 5,000-gas rewrite
+        // rather than a 22,100-gas cold write.
+        pendingOf[msg.sender] =
+            PendingWithdrawal({assets: 0, epoch: p.epoch, flags: p.flags});
+
         unchecked {
             // safe: this exact amount was added by requestWithdraw, and the
-            // claimed flag above makes a second subtraction impossible. Both
+            // zeroing above makes a second subtraction impossible. Both
             // fields share a slot, so this is a single warm rewrite.
             // forge-lint: disable-next-line(unsafe-typecast)
-            assets.pending -= uint128(owed);
-            // forge-lint: disable-next-line(unsafe-typecast)
-            assets.idle -= uint128(owed);
+            assets = Assets({idle: a.idle - uint128(owed), pending: a.pending - uint128(owed)});
         }
 
-        IERC20(asset()).safeTransfer(request.owner, owed);
-        emit WithdrawClaimed(requestId, request.owner, owed);
+        IERC20(asset()).safeTransfer(msg.sender, owed);
+        emit WithdrawClaimed(requestId, msg.sender, owed);
     }
 
     // -----------------------------------------------------------------------

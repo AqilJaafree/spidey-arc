@@ -74,14 +74,16 @@ Arc charges gas in USDC, so these are literal cents of user yield.
 
 `contracts/test/GasBudget.t.sol` asserts the spec's targets, so a regression fails the build. But those tests measure **execution gas** via `gasleft()`. A real transaction also pays the 21,000-gas intrinsic cost plus calldata, and — specific to Arc — reads through a USDC contract that is not a normal ERC-20. Both columns below are real:
 
-| Operation | Test (execution) | **Measured on Arc** | Budget | Verdict |
-|---|---:|---:|---:|---|
-| `deposit` (first ever, cold) | — | 132,111 | 90,000 | over, one-time |
-| `deposit` (steady state) | 39,693 | **80,807** | 90,000 | **within** |
-| `requestWithdraw` | 31,038 | **72,955** | 60,000 | **over by 22%** |
-| `postScores` | 4,510 | — | 30,000 | within |
-| `rebalance` (EVM→EVM) | 110,605 | — | 180,000 | within |
-| `claimWithdraw` | 8,781 | — | 70,000 | within |
+| Operation | **Measured on Arc** | Budget | Verdict |
+|---|---:|---:|---|
+| `deposit` (steady state) | **80,829** | 90,000 | within |
+| `requestWithdraw` (steady state) | **53,264** | 60,000 | within |
+| `claimWithdraw` | **65,774** | 70,000 | within |
+| `settleEpoch` | 33,582 | — | — |
+| `deposit` (first ever, cold) | 132,121 | 90,000 | over, once per vault |
+| `requestWithdraw` (first ever per holder) | 70,329 | 60,000 | over, once per holder |
+
+Every budget is met in steady state. The two "first ever" rows are cold-storage costs paid once — the same shape as any contract's first write into a fresh slot.
 
 **`requestWithdraw` misses its budget on-chain**, and the reason is worth knowing before setting any other budget on this chain.
 
@@ -95,26 +97,15 @@ Arc's USDC ERC-20 at `0x3600…0000` is a shim over the native balance, not a st
 
 A `balanceOf` costs **~11,000 gas on Arc against ~2,100 for a conventional ERC-20** — roughly 5×.
 
-#### What was done about it
+#### Getting `requestWithdraw` under budget: two steps
 
-Caching `totalAssets()` within a call was the obvious fix and turns out to be worthless: instrumenting the vault showed `balanceOf` is already called **exactly once** per deposit and per withdrawal request. There was no repetition to remove. The cost was one read that is simply expensive.
+**Step one — stop reading the shim.** Caching `totalAssets()` was the obvious move and turned out to be worthless: instrumenting the vault showed `balanceOf` is already called **exactly once** per deposit and per withdrawal request. There was no repetition to remove. So `idle` is now tracked in vault storage and the hot paths never call the token. A test asserts zero `balanceOf` reads on both, since a regression silently adds ~11,000 gas.
 
-So `idle` is now tracked in vault storage instead of read from the token, and the hot paths never touch the shim. A test asserts zero `balanceOf` reads on both paths, since a regression there silently adds ~11,000 gas.
-
-Measured on live Arc, before and after:
-
-| Operation | before | after | Δ |
-|---|---:|---:|---:|
-| `requestWithdraw` | 79,407 | **72,955** | −6,452 |
-| `deposit` (steady) | 79,227 | 80,807 | +1,580 |
-
-The saving is smaller than the 11,162 removed because moving `pending` out of the queue slot added a second slot access back; `deposit` pays slightly more because it now writes the tracked balance. Packing all of it into one slot would recover a further ~5,000.
-
-**It still misses the budget, and it cannot meet it as designed.** The floor for any operation that writes one fresh storage slot:
+That alone took `requestWithdraw` from 79,407 to 72,955 — less than the 11,162 removed, because splitting `pending` out of the queue slot added a slot access back. Still over budget, and no amount of further micro-optimization would close it:
 
 ```
 intrinsic transaction                21,000
-new request slot (0 -> non-zero)     22,100
+new request slot (0 -> non-zero)     22,100   <- the problem
 _burn: holder + totalSupply          10,000
 one packed state slot                 5,000
 event                                 2,000
@@ -122,13 +113,23 @@ event                                 2,000
                                      60,100   > 60,000 budget
 ```
 
-Meeting 60,000 requires a structural change, not more micro-optimization — merging a user's requests within an epoch into one slot, so only their first request pays the 22,100 cold write. That changes withdrawal semantics and has not been done.
+**Step two — stop allocating a slot per request.** A fresh slot costs 22,100 gas *every time*. Keyed by holder instead, it costs that once and 5,000 thereafter. The record now carries an `INITIALIZED` bit that is set on a holder's first request and **never cleared**, so the word stays non-zero even when nothing is owed — §8.1's own instruction ("Never write zero. Initialize counters to 1, not 0, and treat 1 as empty") applied to the withdrawal record.
 
-At 27.95 gwei this is **$0.0020 per request**, so it is a modelling error rather than a user-facing problem. But §8's whole argument is that these units are countable money, and the count was wrong.
+The request id is *derived* from `(holder, epoch)` rather than stored, so the id counter disappears too — a whole slot write removed for information both sides already had.
 
-#### A side effect worth having
+| Operation | original | after step 1 | after step 2 | budget |
+|---|---:|---:|---:|---:|
+| `requestWithdraw` | 79,407 | 72,955 | **53,264** | 60,000 |
 
-Tracking `idle` closes the ERC-4626 donation vector outright. Share price is computed from accounted assets, so sending tokens to the vault no longer moves it — verified on-chain: a live 1 USDC donation left `totalAssets` unchanged and surfaced as `unaccountedBalance`. `syncIdle()` folds such balances in deliberately, owner-only. Previously this relied on the virtual-share offset alone.
+Confirmed on-chain that the sentinel works: a request made *after* a claim still costs 53,229, because the slot never went back to zero.
+
+**The trade-off**, stated plainly: a holder has at most one outstanding request. A second request in the same epoch adds to it and returns the same id. A request made while an older *settled* one is unclaimed reverts with `ClaimPendingFirst`, so a claim can never be silently overwritten.
+
+#### A side effect worth having, and a gap it exposed
+
+Tracking `idle` closes the ERC-4626 donation vector outright. Share price is computed from accounted assets, so sending tokens to the vault no longer moves it — verified on-chain: a live 1 USDC donation left `totalAssets` unchanged and surfaced as `unaccountedBalance`. Previously this leaned on the virtual-share offset alone.
+
+That change also exposed a gap, found by walking into it on testnet. A donation into a vault with **no shares outstanding** was unreachable: `syncIdle()` would credit equity nobody holds a claim on, and there was no other exit. `rescueUnaccounted(to)` now closes it — owner-only and bounded to `unaccountedBalance()`, so it can never reach depositor assets. A fuzz test asserts exactly that.
 
 ### The Uniswap v3 strategy, run for real
 
@@ -174,9 +175,9 @@ Live at chain 5042002, deployed and exercised with real funds:
 
 | Contract | Address |
 |---|---|
-| `LPVault` | `0x96Ad78E2E30960BA22dd1aABF73764BA804DA65D` |
-| `ScoreOracle` | `0x7C8bD7d04e4D20D513d1B3312641f6F054c33325` |
-| `Router` | `0x4f581A4cEb0c1448f1eC60410b01953D8d5DC184` |
+| `LPVault` | `0xC3bc28D15F847300690223c67177aEa025F07831` |
+| `ScoreOracle` | `0x44dBDe83F339D23368abce56Cc1ABA2B257f1B0b` |
+| `Router` | `0x2d39A8e4C50a2E049C805e99428b11A90106F6e1` |
 | USDC (ERC-20 shim) | `0x3600000000000000000000000000000000000000` |
 
 Deployment cost **0.1169 USDC** across five transactions (3 CREATE + 2 CALL, 5,436,485 gas), against a 0.2937 estimate — real gas priced below the quote.
