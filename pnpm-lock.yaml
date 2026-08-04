@@ -78,6 +78,18 @@ importers:
 
   packages/core: {}
 
+  packages/keeper:
+    dependencies:
+      '@spidey/adapters':
+        specifier: workspace:*
+        version: link:../adapters
+      '@spidey/core':
+        specifier: workspace:*
+        version: link:../core
+      viem:
+        specifier: ^2.21.55
+        version: 2.55.10(typescript@5.9.3)
+
 packages:
 
   '@adraffy/ens-normalize@1.11.1':
