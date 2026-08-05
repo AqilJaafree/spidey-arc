@@ -1,0 +1,35 @@
+[package]
+name = "meteora-receiver"
+version = "0.1.0"
+description = "Created with Anchor"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "meteora_receiver"
+
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+idl-build = ["anchor-lang/idl-build"]
+anchor-debug = []
+custom-heap = []
+custom-panic = []
+
+
+[dependencies]
+anchor-lang = "0.32.1"
+# anchor-spl is intentionally absent until stage 2's Meteora CPI lands. It
+# pulls solana-program -> blake3 -> cpufeatures 0.3, which requires
+# edition2024 and so cannot be built by the SBF toolchain's cargo 1.84.
+# Adding it back will need blake3/cpufeatures pinned, or newer platform-tools.
+
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }
+
+[dev-dependencies]
+proptest = "1"

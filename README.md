@@ -9,7 +9,7 @@ Day-1 design and deviations: [`docs/superpowers/specs/2026-08-04-usdc-lp-vault-d
 
 ## What's built
 
-Days 1 and 2 of the build plan: the scoring engine, an HTTP API, the comparison UI, and the Arc hub contracts. The Solana receiver (Day 3) is not started.
+Days 1–3 of the build plan: the scoring engine, an HTTP API, the comparison UI, the Arc hub contracts, and the Solana CCTP receiver.
 
 ```
 packages/core      scoring math + rank(A). Pure — no I/O.
@@ -18,6 +18,8 @@ packages/api       Hono HTTP surface, TTL-cached.
 packages/keeper    Merkle tree builder + rebalance planner.
 apps/web           Next.js comparison UI.
 contracts/         LPVault (ERC-4626) + ScoreOracle + Router + UniV3Executor.
+solana/            MeteoraReceiver — two-stage CCTP hook (Anchor).
+design/            UI design brief.
 fixtures/          gzipped API captures for offline replay.
 ```
 
@@ -278,6 +280,52 @@ The 500bp-per-epoch NAV guard does not prevent this: it bounds each *step*, not 
 
 **The suite was mutation-tested**, because a green invariant suite proves nothing until you show it can fail. Six deliberate bugs — dropping the idle debit on claim, skipping the pending credit on request, forgetting to credit returned capital, disabling the haircut, double-counting it, rounding it up — were each caught by multiple independent invariants.
 
+## Solana: the two-stage CCTP receiver
+
+`solana/programs/meteora-receiver` implements §5.4. The split into two stages is not stylistic — it is forced by §10.1:
+
+> "Under CCTP v2 the destination hook must succeed for funds to mint. If it reverts... the receive path fails while the source-side burn is already irreversible. V2 removed V1's replacement and rescue entry points."
+
+So **stage 1 must be incapable of failing**, and stage 2 carries every fragile thing and may be retried forever.
+
+### A third spec bug
+
+§5.4's own stage-1 sketch reads:
+
+```rust
+credit.amount = credit.amount.checked_add(params.amount).unwrap();
+```
+
+`.unwrap()` panics on overflow — the exact outcome §10.1 says must be impossible, since a panic here strands an already-burned transfer permanently. The implementation uses `saturating_add`. At 6 decimals a `u64` saturates past 18 trillion USDC, so the clamp is unreachable with real money; were it ever reached, clamping costs bookkeeping precision while panicking costs the funds.
+
+Stage 1's whole computation is expressed as a function that returns a value rather than a `Result` — the "cannot fail" requirement encoded in a type, then proven across the full `u64` space by property test.
+
+### Compute units, measured on a validator
+
+| Instruction | Measured | §9.3 budget |
+|---|---:|---:|
+| `on_cctp_receive` (stage 1) | **3,841 CU** | 20,000 |
+| `deploy_position` (stage 2) | 3,711 CU | 250,000 |
+
+Stage 1's number is real and final — it does no CPI by design, so it will not grow. **Stage 2's is not meaningful yet**: the Meteora `add_liquidity_by_strategy` CPI is not implemented, and that CPI is essentially the entire 250k budget. The number will move a great deal once it lands.
+
+### Tests
+
+- **20 unit + property tests** (`cargo test`) over the pure decision rules, including `stage1_never_panics` across the full `u64` space and `stage2_survives_extreme_bin_ids` at the `i32` boundaries where a naive `active - target` overflows.
+- **10 on-chain tests** against a local validator, including the property the design exists for: *a failed stage 2 leaves the credit intact and retryable*.
+
+### Toolchain note
+
+`anchor build` fails out of the box here: the default platform-tools (v1.48, rustc 1.84) cannot parse dependencies that now require `edition2024`. Build with the newer cached tools instead:
+
+```bash
+rustup toolchain link solana ~/.cache/solana/v1.54/platform-tools/rust
+cargo-build-sbf --tools-version v1.54 --manifest-path programs/meteora-receiver/Cargo.toml
+anchor idl build > target/idl/meteora_receiver.json   # IDL uses the host toolchain
+```
+
+`anchor-spl` is deliberately not a dependency — it pulls `solana-program → blake3 → cpufeatures 0.3`, which reintroduces the same conflict. It will need pinning when stage 2's CPI lands.
+
 ## Two spec bugs found while implementing
 
 **The `rebalance` payback formula does not work as written.** The specification's inline snippet computes
@@ -294,6 +342,8 @@ For the specification's *own* worked example — $1,000 at ΔAPR 3%, cost $2 —
 
 ## Known gaps
 
+- **Stage 2's Meteora CPI is not implemented.** The validation, accounting and retry semantics are complete and tested; the `add_liquidity_by_strategy` call is not. It needs bin arrays derived from the runtime active bin, and a stub returning success would make the program look finished while doing nothing.
+- **Not deployed to devnet.** The faucet is rate-limited and the program needs 1.45 SOL rent-exempt. Deployer is `6aYhp5SwU8to5ca8wjukJ9y5Tn3rByVVCJKmqotNoeHv` — fund it at [faucet.solana.com](https://faucet.solana.com), then `anchor deploy --provider.cluster devnet`.
 - **Meteora has no adapter.** The legacy `dlmm-api.meteora.ag` REST host is retired — Cloudflare returns 404 on every path with `cf-cache-status: HIT`, so it is gone rather than rate-limiting. Real bin-level data needs on-chain reads via `@meteora-ag/dlmm`.
 - **No `tick-level` fidelity yet.** Both live venues report `current-tick-liquidity`, exact only within the current tick interval. True tick-level needs a Graph gateway key or on-chain tick-array reads.
 - **Hourly series are unavailable from every public source**, so §7.6's estimator hygiene (EWMA, winsorization, persistence weighting) is implemented and unit-tested but inert on live data. Affected rows carry a `point estimate` flag.
