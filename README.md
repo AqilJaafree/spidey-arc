@@ -133,6 +133,22 @@ Tracking `idle` closes the ERC-4626 donation vector outright. Share price is com
 
 That change also exposed a gap, found by walking into it on testnet. A donation into a vault with **no shares outstanding** was unreachable: `syncIdle()` would credit equity nobody holds a claim on, and there was no other exit. `rescueUnaccounted(to)` now closes it — owner-only and bounded to `unaccountedBalance()`, so it can never reach depositor assets. A fuzz test asserts exactly that.
 
+### Positions are pooled, one per venue
+
+Depositors never own a position. They hold ERC-4626 shares (`spUSDC`) representing a pro-rata claim on everything the vault holds; the vault opens **one position per venue** and every depositor shares it.
+
+```
+  alice $1,000 ─┐
+  bob   $3,000 ─┼─► LPVault ──► Router ──► executor ──► ONE position per venue
+  carol $6,000 ─┘   (shares)
+
+  alice holds 10% of shares → 10% of whatever that position is worth
+```
+
+`UniV3Executor` did not honour that. It reverted `PositionAlreadyOpen` whenever a venue already held a position, so the vault could deploy to a venue exactly **once, ever** — every depositor after the first would have their capital stranded in the vault with no path to the pool it was ranked into. `LPVault.recordDeploy` accumulates per venue and was happy to be called again; only the executor said no.
+
+Found by asking what a second deposit does, and confirmed on a live Base Sepolia fork before being fixed. `enter` now tops up the existing position with `increaseLiquidity` instead of minting a rival one — minting a second would fragment a venue's liquidity across NFTs the exit path does not track. The tick range is fixed by the first deposit; a later deposit wanting a different range must exit and re-enter, which is a routing decision and belongs off-chain.
+
 ### The Uniswap v3 strategy, run for real
 
 `UniV3Executor` swaps half the USDC into the paired token and mints a concentrated position, then unwinds and returns USDC to the vault. It is tested against a **live fork of Base Sepolia** using the real factory, position manager, swap router and the USDC/WETH 0.3% pool — every address verified on-chain before being written down.

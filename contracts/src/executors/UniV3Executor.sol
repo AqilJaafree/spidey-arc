@@ -54,10 +54,24 @@ interface INonfungiblePositionManager {
         uint128 amount1Max;
     }
 
+    struct IncreaseLiquidityParams {
+        uint256 tokenId;
+        uint256 amount0Desired;
+        uint256 amount1Desired;
+        uint256 amount0Min;
+        uint256 amount1Min;
+        uint256 deadline;
+    }
+
     function mint(MintParams calldata params)
         external
         payable
         returns (uint256 tokenId, uint128 liquidity, uint256 amount0, uint256 amount1);
+
+    function increaseLiquidity(IncreaseLiquidityParams calldata params)
+        external
+        payable
+        returns (uint128 liquidity, uint256 amount0, uint256 amount1);
 
     function decreaseLiquidity(DecreaseLiquidityParams calldata params)
         external
@@ -111,7 +125,6 @@ contract UniV3Executor is IVenueExecutor, IERC721Receiver {
     error ZeroAddress();
     error UnboundedSlippage();
     error NoPosition(uint16 venueId);
-    error PositionAlreadyOpen(uint16 venueId);
     error DeadlinePassed(uint256 deadline);
     error InsufficientBalance(uint256 requested, uint256 available);
     error TickRangeInvalid(int24 lower, int24 upper);
@@ -119,6 +132,7 @@ contract UniV3Executor is IVenueExecutor, IERC721Receiver {
     event PositionOpened(
         uint16 indexed venueId, uint256 indexed tokenId, uint128 liquidity, int24 lower, int24 upper
     );
+    event PositionIncreased(uint16 indexed venueId, uint256 indexed tokenId, uint128 added);
     event PositionClosed(uint16 indexed venueId, uint256 indexed tokenId, uint256 usdcReturned);
     event FeesCollected(uint16 indexed venueId, uint256 amount0, uint256 amount1);
 
@@ -211,7 +225,6 @@ contract UniV3Executor is IVenueExecutor, IERC721Receiver {
         // An unbounded swap is a free lunch for whoever is watching the
         // mempool. The engine always has a price, so it always has a floor.
         if (p.swapAmountIn > 0 && p.swapAmountOutMin == 0) revert UnboundedSlippage();
-        if (positionOf[venueId] != 0) revert PositionAlreadyOpen(venueId);
 
         uint256 balance = usdc.balanceOf(address(this));
         if (balance < assets) revert InsufficientBalance(assets, balance);
@@ -244,24 +257,56 @@ contract UniV3Executor is IVenueExecutor, IERC721Receiver {
         (uint256 amount0Desired, uint256 amount1Desired) =
             usdcIsToken0 ? (usdcRemaining, pairedReceived) : (pairedReceived, usdcRemaining);
 
-        (uint256 tokenId, uint128 liquidity,,) = positionManager.mint(
-            INonfungiblePositionManager.MintParams({
-                token0: token0,
-                token1: token1,
-                fee: poolFee,
-                tickLower: p.tickLower,
-                tickUpper: p.tickUpper,
-                amount0Desired: amount0Desired,
-                amount1Desired: amount1Desired,
-                amount0Min: p.amount0Min,
-                amount1Min: p.amount1Min,
-                recipient: address(this),
-                deadline: p.deadline
-            })
-        );
+        uint256 tokenId = positionOf[venueId];
 
-        positionOf[venueId] = tokenId;
-        emit PositionOpened(venueId, tokenId, liquidity, p.tickLower, p.tickUpper);
+        if (tokenId == 0) {
+            uint128 minted;
+            (tokenId, minted,,) = positionManager.mint(
+                INonfungiblePositionManager.MintParams({
+                    token0: token0,
+                    token1: token1,
+                    fee: poolFee,
+                    tickLower: p.tickLower,
+                    tickUpper: p.tickUpper,
+                    amount0Desired: amount0Desired,
+                    amount1Desired: amount1Desired,
+                    amount0Min: p.amount0Min,
+                    amount1Min: p.amount1Min,
+                    recipient: address(this),
+                    deadline: p.deadline
+                })
+            );
+            positionOf[venueId] = tokenId;
+            emit PositionOpened(venueId, tokenId, minted, p.tickLower, p.tickUpper);
+        } else {
+            // A venue already holds a position, so this is the second (or
+            // hundredth) depositor's capital arriving. Positions here are
+            // POOLED — one per venue, shared pro-rata through the vault's
+            // ERC-4626 shares — so the right move is to grow the existing
+            // position, not to mint a rival one.
+            //
+            // Minting a second would fragment the venue's liquidity across
+            // NFTs the exit path does not know about, and rejecting the
+            // deposit (as this contract previously did, with
+            // `PositionAlreadyOpen`) would strand every depositor after the
+            // first: the vault's own `recordDeploy` accumulates per venue and
+            // is happy to be called again, so only the executor said no.
+            //
+            // The tick range is fixed by the first deposit. A later deposit
+            // wanting a different range must exit and re-enter, which is a
+            // routing decision and belongs off-chain.
+            (uint128 added,,) = positionManager.increaseLiquidity(
+                INonfungiblePositionManager.IncreaseLiquidityParams({
+                    tokenId: tokenId,
+                    amount0Desired: amount0Desired,
+                    amount1Desired: amount1Desired,
+                    amount0Min: p.amount0Min,
+                    amount1Min: p.amount1Min,
+                    deadline: p.deadline
+                })
+            );
+            emit PositionIncreased(venueId, tokenId, added);
+        }
     }
 
     // -----------------------------------------------------------------------
