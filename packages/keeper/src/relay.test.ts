@@ -84,3 +84,21 @@ describe('attestation service (live)', () => {
     expect(production.status).toBe('not_found');
   }, 60_000);
 });
+
+describe('App Kit amount conversion', () => {
+  it('converts decimal strings to USDC base units', async () => {
+    const { toUsdc6 } = await import('./appkit.js');
+    // App Kit returns "1.0" for a 1 USDC bridge.
+    expect(toUsdc6('1.0')).toBe(1_000_000n);
+    expect(toUsdc6('2')).toBe(2_000_000n);
+    expect(toUsdc6('0.000001')).toBe(1n);
+    expect(toUsdc6('1234.567890')).toBe(1_234_567_890n);
+  });
+
+  it('refuses to truncate precision the token cannot carry', async () => {
+    const { toUsdc6 } = await import('./appkit.js');
+    // Silently dropping a digit here is how a keeper books less than arrived
+    // and leaves the remainder stranded as unaccounted balance.
+    expect(() => toUsdc6('1.0000001')).toThrow(/refusing to truncate/);
+  });
+});

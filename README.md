@@ -162,7 +162,22 @@ It is a **TypeScript SDK**, so it runs in a keeper, not in a transaction. `Route
 
 §13 asked whether App Kit's `bridge()` exposes hook data, "or whether the Solana leg must drop to the raw `TokenMessengerV2` interface while EVM legs stay on App Kit". The answer is broader than the question: **every leg the Router drives is raw**, because the Router is a contract. App Kit's job is the half that happens *between* transactions — which is exactly the half that was manual.
 
-`packages/keeper/src/relay.ts` also keeps an independent attestation fetcher alongside App Kit's happy path. A keeper that crashes mid-bridge leaves funds burned and attested but unminted; without a way to fetch and submit an attestation directly, that capital is stranded on a technicality.
+`packages/keeper/src/appkit.ts` implements it. One `bridge()` call replaces the four manual steps — burn, poll Iris, `receiveMessage`, repeat in reverse. Run live, Arc → Base Sepolia:
+
+```
+  approve            success  0xac56ce0f…
+  burn               success  0xc7329688…
+  fetchAttestation   success
+  mint               success  0xaf551b29…
+
+  17.2 seconds, FAST
+```
+
+Against **15+ minutes** doing it by hand with `SLOW`. Balances confirm both directions: Base 7.69 → 6.69 USDC, Arc 8.49 → 9.48.
+
+`relay.ts` keeps an independent attestation fetcher alongside App Kit's happy path. A keeper that crashes mid-bridge leaves funds burned and attested but unminted; without a way to fetch and submit an attestation directly, that capital is stranded on a technicality.
+
+**App Kit still cannot tell the vault.** Capital returns as a mint, so nothing calls back — `bridgeAndBook` pairs the bridge with `Router.recordBridgeArrival`, and deliberately does not book unless the bridge reports `success`. Booking a pending bridge would credit capital that has not arrived, which is exactly the unbacked-idle case the on-chain bound rejects.
 
 **Pick the finality tier deliberately.** `minFinalityThreshold` 2000 (standard) waits for hard finality, which on Base Sepolia is 13–19 minutes; 1000 (fast) settles in seconds for a fee. §7.5's payback rule already prices the wait, so the engine should choose — the contract only bounds the fee.
 

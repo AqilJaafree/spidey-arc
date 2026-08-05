@@ -14,3 +14,4 @@
 export * from './merkle.js';
 export * from './plan.js';
 export * from './relay.js';
+export * from './appkit.js';
