@@ -694,15 +694,28 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
     }
 
     /// @notice Record capital coming back from a venue. Router-only.
+    /// @notice Record capital coming back from a venue. Router-only.
+    ///
+    /// @dev A venue that earned fees returns MORE than its book value, and the
+    ///      whole point of the vault is to earn fees. So the book is reduced by
+    ///      at most what the venue held and the excess is recognized as profit,
+    ///      landing in `idle` and therefore in `totalAssets()`.
+    ///
+    ///      This previously required `amount <= venue.deployedAssets`, which
+    ///      meant a profitable position could not be exited at all: the vault
+    ///      tolerated losses and reverted on gains. Found by asking what
+    ///      happens when the strategy works.
     function recordReturn(uint16 venueId, uint256 amount) external onlyRouter {
         VenueState memory venue = venues[venueId];
-        if (amount > venue.deployedAssets) revert InsufficientIdle(amount, venue.deployedAssets);
+
+        // forge-lint: disable-next-line(unsafe-typecast)
+        uint128 bookReduction =
+            amount > venue.deployedAssets ? venue.deployedAssets : uint128(amount);
 
         unchecked {
             venues[venueId] = VenueState({
-                // safe: `amount <= venue.deployedAssets` checked above
-                // forge-lint: disable-next-line(unsafe-typecast)
-                deployedAssets: venue.deployedAssets - uint128(amount),
+                // safe: bounded by `venue.deployedAssets` above
+                deployedAssets: venue.deployedAssets - bookReduction,
                 lastRebalanceAt: uint64(block.timestamp),
                 scoreBps: venue.scoreBps,
                 venueId: venue.venueId,
@@ -710,9 +723,8 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
                 flags: venue.flags
             });
             // safe: the aggregate is the sum of per-venue balances, so it is
-            // always at least `venue.deployedAssets`, itself >= `amount`
-            // forge-lint: disable-next-line(unsafe-typecast)
-            nav.deployedAssets -= uint128(amount);
+            // always at least this venue's book value
+            nav.deployedAssets -= bookReduction;
         }
         // The executor transfers tokens back directly, so credit tracked idle
         // here. Without this the returned capital would sit as an unaccounted

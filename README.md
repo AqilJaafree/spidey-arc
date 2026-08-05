@@ -361,6 +361,35 @@ anchor idl build > target/idl/meteora_receiver.json   # IDL uses the host toolch
 
 `anchor-spl` is deliberately not a dependency — it pulls `solana-program → blake3 → cpufeatures 0.3`, which reintroduces the same conflict. It will need pinning when stage 2's CPI lands.
 
+## Case studies: sequences, not single calls
+
+Every bug in this project needed a *sequence*. Single-call tests passed throughout. `contracts/test/CaseStudies.t.sol` probes orderings a live vault hits within days; two of them found real bugs.
+
+| Case | Result |
+|---|---|
+| 1. Venue earned fees, then exits | **BUG — could not exit at all** |
+| 2. Deposit immediately before a NAV gain | exposure quantified, not fixed |
+| 3. Churn A→B→A | dwell blocks the return leg ✓ |
+| 4. Partial return | remainder stays deployed ✓ |
+| 5. Bank run — everyone exits at once | all paid, vault empties cleanly ✓ |
+| 6. Paused venue | blocks new capital, releases what's there ✓ |
+| 7. 50 dust deposits | rounding never favours the depositor ✓ |
+| 8. Deposit exactly at the cap | succeeds, next one fails ✓ |
+| 9. Keeper names a big amount, little moves | **BUG — payback rule bypassed** |
+| 10. NAV rises after a request | gain goes to holders who stayed ✓ |
+
+### Bug: a profitable venue could not be exited
+
+`recordReturn` required `amount <= venue.deployedAssets`. A venue that earned fees returns *more* than its book value, so the call reverted — **the vault tolerated losses and broke on gains**, which is the one outcome it exists to produce. The book is now reduced by at most what the venue held and the excess is recognized as profit.
+
+### Bug: the payback rule could be bypassed by overstating the size
+
+`rebalance` validated the economics against the caller's claimed `amount`, then moved whatever the venue actually returned. A keeper could name $1,000,000 — repaying a $2 move in 0.02 days, clearing easily — while only $1,000 moved, where the true payback is 24 days and should be refused. That is exactly the churn §5.3's rule exists to prevent, bypassed by lying about the size. The economics are now re-checked against what actually came back.
+
+### Not fixed: depositing just before a NAV gain
+
+NAV lands in one transaction, so anyone watching the reporter can deposit immediately before it and capture value they were never at risk for. Measured: a depositor doubling the vault right before a +5% report captures ~half the gain. The 500bp per-epoch cap bounds the size; the real defences are a private mempool or a deposit fee, neither of which is in scope here. Recorded with a test rather than left to be discovered.
+
 ## Two spec bugs found while implementing
 
 **The `rebalance` payback formula does not work as written.** The specification's inline snippet computes

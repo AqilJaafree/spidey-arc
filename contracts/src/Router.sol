@@ -253,6 +253,18 @@ contract Router is TransientReentrancyGuard {
             recovered = fromExecutor.exit(fromVenue, amount, exitData);
         }
 
+        // Re-check the economics against what ACTUALLY came back. The gate
+        // above ran on the caller's claimed `amount`, and a venue can return
+        // less — a position partly out of range, or simply less deployed than
+        // the keeper asserted. Without this, a keeper passes the payback test
+        // by naming a large amount and then moves a fraction of it, which is
+        // precisely the churn §5.3 exists to prevent: at $1m a $2 move repays
+        // in 0.02 days, at $1k it needs 24.
+        if (recovered != amount) {
+            (bool stillOk,, ) = checkPayback(recovered, estCostUsdc, deltaApyBps);
+            if (!stillOk) revert PaybackTooLong(recovered, amount);
+        }
+
         vault.recordReturn(fromVenue, recovered);
         vault.transferToExecutor(address(toExecutor), recovered);
         vault.recordDeploy(toVenue, recovered, toScoreBps);

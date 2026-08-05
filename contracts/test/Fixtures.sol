@@ -50,6 +50,13 @@ contract MockExecutor is IVenueExecutor {
     function isSynchronous() external view override returns (bool) {
         return sync;
     }
+
+    /// @dev Simulate a venue whose position gained or lost value, so the
+    ///      exit path can be tested against a return that differs from what
+    ///      was deposited.
+    function setEntered(uint256 value) external {
+        entered = value;
+    }
 }
 
 /// @dev A minimal, dependency-free Merkle tree matching {ScoreOracle.leafHash}
@@ -197,6 +204,26 @@ abstract contract Fixtures is Test {
         oracle.postScores(root, asOf, "ipfs://leaves");
 
         proofB = MerkleLib.proof(leaves, 1);
+    }
+
+    /// @dev Post a score set and return the proof for whichever venue the
+    ///      caller is about to act on. `postScores` returns VENUE_B's proof,
+    ///      which silently produces BadProof when used against VENUE_A.
+    function postScoresFor(uint16 venueId, uint32 scoreBps, uint32 netApyBps)
+        internal
+        returns (bytes32[] memory proof)
+    {
+        vm.warp(vm.getBlockTimestamp() + 1);
+        uint64 asOf = uint64(vm.getBlockTimestamp());
+
+        bytes32[] memory leaves = new bytes32[](2);
+        leaves[0] = oracle.leafHash(VENUE_A, scoreBps, netApyBps, asOf);
+        leaves[1] = oracle.leafHash(VENUE_B, scoreBps, netApyBps, asOf);
+
+        vm.prank(reporter);
+        oracle.postScores(MerkleLib.root(leaves), asOf, "ipfs://leaves");
+
+        return MerkleLib.proof(leaves, venueId == VENUE_A ? 0 : 1);
     }
 
     function depositAs(address who, uint256 assets) internal returns (uint256 shares) {
