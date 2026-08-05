@@ -56,6 +56,7 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
     error AmountTooLarge();
     error ZeroShares();
     error VaultNotEmpty(uint256 outstanding);
+    error CapitalStillDeployed(uint256 deployed);
 
     // -----------------------------------------------------------------------
     // Events — §8.1: history lives in logs, not storage.
@@ -78,6 +79,7 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
     event IdleSynced(uint256 recovered, uint256 newIdle);
     event UnaccountedRescued(address indexed to, uint256 amount);
     event OrphanedIdleSwept(address indexed to, uint256 amount);
+    event VenueClosed(uint16 indexed venueId, uint256 writtenOff);
 
     // -----------------------------------------------------------------------
     // Constants
@@ -282,13 +284,34 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
         }
     }
 
+    /// @dev Unaccounted tokens are only unambiguous when nothing is out at a
+    ///      venue. While capital is deployed, a balance the vault does not
+    ///      recognise might be a donation — or it might be an executor that
+    ///      transferred back before the Router recorded the return, which is
+    ///      ordinary depositor capital mid-flight.
+    ///
+    ///      Both {syncIdle} and {rescueUnaccounted} previously guessed
+    ///      "donation" and were wrong in the second case: sync double-counted
+    ///      it (equity claimed 2,000 against 1,000 real tokens) and rescue
+    ///      handed it to the owner. Guarding on "nothing deployed" removes the
+    ///      ambiguity instead of resolving it by assumption.
+    modifier onlyWhenNothingDeployed() {
+        if (nav.deployedAssets != 0) revert CapitalStillDeployed(nav.deployedAssets);
+        _;
+    }
+
     /// @notice Send unaccounted balance somewhere, without crediting equity.
     /// @dev Bounded to {unaccountedBalance}, so it can never reach depositor
     ///      assets. Without it, tokens sent to a vault with no shares
     ///      outstanding are unreachable: {syncIdle} would credit equity that
     ///      nobody holds a claim on. Found the hard way on testnet — a 1 USDC
     ///      donation into a superseded deployment had no exit.
-    function rescueUnaccounted(address to) external onlyOwner returns (uint256 amount) {
+    function rescueUnaccounted(address to)
+        external
+        onlyOwner
+        onlyWhenNothingDeployed
+        returns (uint256 amount)
+    {
         if (to == address(0)) revert ZeroAddress();
         amount = unaccountedBalance();
         if (amount == 0) return 0;
@@ -332,7 +355,7 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
 
     /// @notice Fold unaccounted balance into vault equity. Owner-only, because
     ///         it moves the share price.
-    function syncIdle() external onlyOwner returns (uint256 recovered) {
+    function syncIdle() external onlyOwner onlyWhenNothingDeployed returns (uint256 recovered) {
         recovered = unaccountedBalance();
         if (recovered > 0) {
             assets.idle += uint128(recovered);
@@ -768,6 +791,49 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
         // forge-lint: disable-next-line(unsafe-typecast)
         assets.idle = assets.idle + uint128(amount);
         emit Returned(venueId, amount);
+    }
+
+    /// @notice Recognize a closed venue's residual book value as a realized
+    ///         loss. Router-only.
+    ///
+    /// @dev When a position is fully unwound, whatever the venue's book still
+    ///      claims is money that did not come back — slippage, impermanent
+    ///      loss, or fees paid. Leaving it on the book makes the vault look
+    ///      solvent when it is not, which is the stale-NAV limitation in its
+    ///      realized form.
+    ///
+    ///      It bites immediately and concretely. Observed on Base Sepolia: a
+    ///      5 USDC position returned 4.985 after slippage, the remaining
+    ///      0.015 stayed on the book, `coverageBps` therefore read 10000, no
+    ///      haircut applied, and `claimWithdraw` reverted `InsufficientIdle`.
+    ///      The depositor could not be paid at all — worse than being paid
+    ///      slightly less.
+    ///
+    ///      Writing the residual down lets the haircut do its job: coverage
+    ///      falls to 9970 and the claim settles at 4.985, with the loss taken
+    ///      by the holder who incurred it. Deliberately not bounded by
+    ///      `MAX_NAV_DELTA_BPS` — that cap exists to limit what a compromised
+    ///      *reporter* can do to a live position, whereas this is the Router
+    ///      recording an outcome that has already happened.
+    function recordVenueClosed(uint16 venueId) external onlyRouter returns (uint256 writtenOff) {
+        VenueState memory venue = venues[venueId];
+        writtenOff = venue.deployedAssets;
+        if (writtenOff == 0) return 0;
+
+        venues[venueId] = VenueState({
+            deployedAssets: 0,
+            lastRebalanceAt: uint64(block.timestamp),
+            scoreBps: venue.scoreBps,
+            venueId: venue.venueId,
+            chainDomain: venue.chainDomain,
+            flags: venue.flags
+        });
+
+        unchecked {
+            // safe: the aggregate is the sum of per-venue books
+            nav.deployedAssets -= venue.deployedAssets;
+        }
+        emit VenueClosed(venueId, writtenOff);
     }
 
     /// @notice Send idle USDC out to a venue executor. Router-only.

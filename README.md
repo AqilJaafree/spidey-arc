@@ -228,10 +228,10 @@ So the whole stack is also deployed locally on Base Sepolia, where the routing l
 
 | Contract | Address |
 |---|---|
-| `LPVault` | `0x4f581A4cEb0c1448f1eC60410b01953D8d5DC184` |
-| `ScoreOracle` | `0xcEd07b12523095C4267Fa3aDfD8A79d15dF79023` |
-| `Router` | `0x39f05803Cd46DBCee98b86Ce1c0bFaaeeA9712Ff` |
-| `UniV3Executor` | `0x660b01E478E9107546b772F3912966AB4e2B0309` |
+| `LPVault` | `0x44dBDe83F339D23368abce56Cc1ABA2B257f1B0b` |
+| `ScoreOracle` | `0x2d39A8e4C50a2E049C805e99428b11A90106F6e1` |
+| `Router` | `0x82d2BfB316ae89050406c01970dc4e704Def9c5A` |
+| `UniV3Executor` | `0x23300360B14D995eFd8d1072685C4dA39AEf5f81` |
 
 Deployment cost **0.000046 ETH**. Unlike the Arc deployment, this one is fully wired: venue 1 registered, executor set, caps 10k/5k USDC.
 
@@ -239,14 +239,17 @@ The full cycle, run with real money:
 
 ```
   postScores      root built by @spidey/keeper, verified on-chain
-  deposit 10 USDC → 10e9 spUSDC shares
-  deployIdle      → LIVE Uniswap v3 position, tokenId 81591
-                    USDC/WETH 0.3%, ticks [195540, 195960]
+  deposit 5 USDC  → 5e9 spUSDC shares
+  deployIdle      → LIVE Uniswap v3 position, tokenId 81593
+                    USDC/WETH 0.3%, ±200 ticks around spot
   requestWithdraw → shares burn, payout fixed
-  returnToVault   → position unwound, capital home
+  returnToVault   → position unwound and closed at a loss
+  coverageBps     → 9970, the 15bp of slippage recognized
   settleEpoch
-  claimWithdraw   → 10.0000 USDC returned
+  claimWithdraw   → 4.985 USDC — the depositor takes the real loss
 ```
+
+That last line is the point. An earlier run of the same sequence **reverted** `InsufficientIdle`: the slippage stayed on the venue's book, so the vault looked solvent, no haircut applied, and the depositor could not be paid at all — worse than being paid slightly less.
 
 ### Deploying
 
@@ -397,7 +400,9 @@ anchor idl build > target/idl/meteora_receiver.json   # IDL uses the host toolch
 
 `anchor-spl` is deliberately not a dependency — it pulls `solana-program → blake3 → cpufeatures 0.3`, which reintroduces the same conflict. It will need pinning when stage 2's CPI lands.
 
-## Two bugs found by running the flow, not reading the code
+## Bugs found by running the flow, not reading the code
+
+Four more, none of which any single-call test would reach.
 
 ### Capital was one-way
 
@@ -416,6 +421,21 @@ A venue can return more than it was given. That surplus lands in `idle` as accou
 Observed live: a 10 USDC deposit round-tripped and returned 14.6, leaving 4.6 stranded. (That surplus was thin-pool round-trip slippage in the test, not yield — but the stranding is real either way.)
 
 `sweepOrphanedIdle` recovers it, guarded on `totalSupply() == 0` *and* no pending claims, so it can never touch depositor funds.
+
+### Unaccounted tokens were ambiguous while capital was deployed
+
+An executor that transfers back before the Router records it produces a balance the vault does not recognise — indistinguishable, by balance alone, from a donation. Both sweep paths guessed "donation" and were wrong:
+
+- `syncIdle` folded it into equity while the venue's book still claimed it, so equity read **2,000 against 1,000 real tokens**.
+- `rescueUnaccounted` handed in-flight depositor capital to the owner.
+
+Both now refuse to run while anything is deployed, which removes the ambiguity rather than resolving it by assumption. The invariant suite missed this too — `idleNeverExceedsRealBalance` only checks the idle leg, so it stayed green through a double count. `invariant_equityIsCoveredBySomethingReal` measures the whole system and catches it.
+
+### A realized loss stayed on the books and blocked withdrawals
+
+When a position is fully unwound, whatever the venue's book still claims is money that did not come back. Leaving it there made the vault look solvent when it was not — the stale-NAV limitation in its realized form, and it bit immediately: a live 5 USDC position returned 4.985, the missing 0.015 stayed on the book, `coverageBps` read 10000, and `claimWithdraw` reverted.
+
+`returnToVault(..., finalize: true)` now writes the residual off, letting the haircut do its job. Deliberately not bounded by `MAX_NAV_DELTA_BPS` — that cap limits what a compromised *reporter* can do to a live position; this is the Router recording an outcome that already happened.
 
 ## Case studies: sequences, not single calls
 

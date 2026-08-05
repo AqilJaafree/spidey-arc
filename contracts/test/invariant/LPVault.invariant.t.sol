@@ -109,6 +109,27 @@ contract LPVaultInvariantTest is Test {
         }
     }
 
+    /// @notice Everything the vault claims to own must exist somewhere real —
+    ///         either in its own balance or at an executor.
+    ///
+    /// @dev The invariant that was missing. `idleNeverExceedsRealBalance`
+    ///      checks only the idle leg, so it stayed green while equity
+    ///      double-counted an unrecorded return: idle 1,000 plus a venue book
+    ///      of 1,000, against 1,000 real tokens. This measures the whole
+    ///      system, which is where the discrepancy actually shows.
+    function invariant_equityIsCoveredBySomethingReal() public view {
+        (uint128 idle,) = vault.assets();
+        uint256 venueBooks;
+        uint256 n = handler.venueCount();
+        for (uint256 i = 0; i < n; i++) {
+            (uint128 deployed,,,,,) = vault.venues(handler.venueIds(i));
+            venueBooks += deployed;
+        }
+        uint256 claimed = uint256(idle) + venueBooks;
+        uint256 real = usdc.balanceOf(address(vault)) + usdc.balanceOf(address(handler));
+        assertLe(claimed, real, "the vault claims more than exists anywhere");
+    }
+
     // -----------------------------------------------------------------------
     // Conservation
     // -----------------------------------------------------------------------
@@ -176,14 +197,25 @@ contract LPVaultInvariantTest is Test {
     // Donations cannot move the share price
     // -----------------------------------------------------------------------
 
-    /// @notice Unaccounted balance is exactly what was donated and not yet
-    ///         swept, so a donation can never leak into equity by itself.
-    function invariant_donationsStayOutOfEquity() public view {
+    /// @notice Tokens the vault does not recognise are never counted as
+    ///         equity, whatever their origin.
+    ///
+    /// @dev The earlier version asserted `unaccounted == ghost_donated`, which
+    ///      tested the handler's bookkeeping rather than the contract: once an
+    ///      executor could transfer back before the router recorded it, the
+    ///      two stopped being the same quantity for reasons that had nothing
+    ///      to do with the vault. What actually matters is that unrecognised
+    ///      tokens stay outside the share price, and that is stated directly.
+    function invariant_unrecognisedTokensAreNeverEquity() public view {
+        (uint128 idle,) = vault.assets();
+        uint256 held = usdc.balanceOf(address(vault));
         assertEq(
             vault.unaccountedBalance(),
-            handler.ghost_donatedTotal(),
-            "donated funds leaked into or out of accounted equity"
+            held > idle ? held - idle : 0,
+            "unaccounted balance must be exactly the unrecognised remainder"
         );
+        // ...and equity never reaches for it.
+        assertLe(uint256(idle), held, "equity counts tokens the vault does not hold");
     }
 
     // -----------------------------------------------------------------------

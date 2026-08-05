@@ -48,6 +48,11 @@ contract LPVaultHandler is CommonBase, StdCheats, StdUtils {
     bool public ghost_navWasReported;
     /// @dev Sum of `amount` passed to recordDeploy, less recordReturn.
     uint256 public ghost_venueBookTotal;
+    /// @dev Tokens an executor sent back before the router recorded them.
+    ///      Indistinguishable from a donation by balance alone — which is the
+    ///      whole reason `syncIdle` and `rescueUnaccounted` refuse to run while
+    ///      capital is deployed.
+    uint256 public ghost_unrecordedReturns;
 
     // --- call counters, printed by the invariant summary -------------------
 
@@ -213,6 +218,9 @@ contract LPVaultHandler is CommonBase, StdCheats, StdUtils {
         vm.prank(router);
         try vault.recordReturn(venueId, amount) {
             ghost_venueBookTotal -= amount;
+            // An earlier unrecorded transfer is now accounted for.
+            uint256 settle = ghost_unrecordedReturns < amount ? ghost_unrecordedReturns : amount;
+            ghost_unrecordedReturns -= settle;
         } catch {
             usdc.mint(address(this), amount); // keep the handler solvent
         }
@@ -244,6 +252,22 @@ contract LPVaultHandler is CommonBase, StdCheats, StdUtils {
             ghost_rescuedTotal += amount;
             ghost_donatedTotal -= amount;
         } catch {}
+    }
+
+    /// @dev An executor transferring back WITHOUT the router recording it.
+    ///      This is the state that made unaccounted balance ambiguous and let
+    ///      `syncIdle` double-count; the fuzzer needs to be able to produce it.
+    function returnWithoutRecording(uint256 venueSeed, uint256 amountSeed)
+        external
+        countCall("returnWithoutRecording")
+    {
+        uint16 venueId = _venue(venueSeed);
+        (uint128 deployed,,,,,) = vault.venues(venueId);
+        if (deployed == 0) return;
+        uint256 amount = bound(amountSeed, 1, deployed);
+        if (usdc.balanceOf(address(this)) < amount) return;
+        usdc.transfer(address(vault), amount);
+        ghost_unrecordedReturns += amount;
     }
 
     /// @dev Lets the fuzzer explore epoch boundaries and cooldowns.

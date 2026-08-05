@@ -155,7 +155,7 @@ contract CaseStudiesTest is Fixtures {
 
         // Without `returnToVault` this is where a real vault would be stuck.
         vm.prank(keeper);
-        uint256 recovered = router.returnToVault(VENUE_A, 10_000 * USDC_ONE, "");
+        uint256 recovered = router.returnToVault(VENUE_A, 10_000 * USDC_ONE, "", true);
         assertEq(recovered, 10_000 * USDC_ONE, "capital came home");
 
         vm.prank(operator);
@@ -172,7 +172,7 @@ contract CaseStudiesTest is Fixtures {
 
         // $1,000 is a size at which `rebalance` would refuse to move at all.
         vm.prank(keeper);
-        uint256 recovered = router.returnToVault(VENUE_A, 1_000 * USDC_ONE, "");
+        uint256 recovered = router.returnToVault(VENUE_A, 1_000 * USDC_ONE, "", true);
         assertEq(recovered, 1_000 * USDC_ONE, "small positions can still exit");
     }
 
@@ -183,7 +183,7 @@ contract CaseStudiesTest is Fixtures {
 
         vm.prank(alice);
         vm.expectRevert(Router.NotKeeper.selector);
-        router.returnToVault(VENUE_A, 1_000 * USDC_ONE, "");
+        router.returnToVault(VENUE_A, 1_000 * USDC_ONE, "", true);
     }
 
     /// @dev Surplus stranded after the last holder leaves. Observed on Base
@@ -200,7 +200,7 @@ contract CaseStudiesTest is Fixtures {
         vm.prank(alice);
         uint256 id = vault.requestWithdraw(shares);
         vm.prank(keeper);
-        router.returnToVault(VENUE_A, 1_200 * USDC_ONE, "");
+        router.returnToVault(VENUE_A, 1_200 * USDC_ONE, "", true);
         vm.prank(operator);
         vault.settleEpoch();
         vm.prank(alice);

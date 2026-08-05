@@ -49,6 +49,7 @@ contract Router is TransientReentrancyGuard {
     );
     event RebalanceDeclined(uint16 indexed fromVenue, uint16 indexed toVenue, bytes4 reason);
     event CapitalReturned(uint16 indexed venueId, uint256 requested, uint256 recovered);
+    event VenueWrittenOff(uint16 indexed venueId, uint256 writtenOff);
     event ExecutorSet(uint16 indexed venueId, address indexed executor);
     event ConfigChanged(uint32 expectedHoldDays, uint64 minDwell, uint32 maxNetApyBps);
     event KeeperChanged(address indexed previous, address indexed next);
@@ -329,12 +330,17 @@ contract Router is TransientReentrancyGuard {
     ///      traps its depositors. Dwell is not enforced either, for the same
     ///      reason: a queue that has to wait 12 hours because capital moved
     ///      recently is a queue that fails when it matters.
-    function returnToVault(uint16 venueId, uint256 amount, bytes calldata exitData)
-        external
-        onlyKeeper
-        nonReentrant
-        returns (uint256 recovered)
-    {
+    /// @param finalize Whether the position is fully closed. When true, any
+    ///        book value the venue still claims after the return is written
+    ///        off as a realized loss. Without this the residual keeps the
+    ///        vault looking solvent, coverage stays at 100%, and withdrawals
+    ///        revert `InsufficientIdle` rather than settling slightly short.
+    function returnToVault(
+        uint16 venueId,
+        uint256 amount,
+        bytes calldata exitData,
+        bool finalize
+    ) external onlyKeeper nonReentrant returns (uint256 recovered) {
         if (amount == 0) revert ZeroAmount();
 
         IVenueExecutor executor = executors[venueId];
@@ -342,6 +348,11 @@ contract Router is TransientReentrancyGuard {
 
         recovered = executor.exit(venueId, amount, exitData);
         vault.recordReturn(venueId, recovered);
+
+        if (finalize) {
+            uint256 writtenOff = vault.recordVenueClosed(venueId);
+            if (writtenOff > 0) emit VenueWrittenOff(venueId, writtenOff);
+        }
 
         emit CapitalReturned(venueId, amount, recovered);
     }
