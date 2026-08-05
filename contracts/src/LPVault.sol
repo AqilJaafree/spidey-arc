@@ -752,7 +752,32 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
         emit Deployed(venueId, amount);
     }
 
+    /// @notice Mark a venue as having capital in flight. Router-only.
+    ///
+    /// @dev Uses `FLAG_PENDING_HOOK`, which §5.1's storage layout reserved and
+    ///      nothing set until an asynchronous executor existed. It matters
+    ///      because during a CCTP bridge the capital is genuinely nowhere
+    ///      claimable — burned on Arc, not yet minted at the destination —
+    ///      and `deployedAssets` alone cannot express that. Without the flag,
+    ///      in-flight capital is indistinguishable from capital sitting safely
+    ///      in a position.
+    function setVenuePending(uint16 venueId, bool pending) external onlyRouter {
+        VenueState memory venue = venues[venueId];
+        if (venue.flags & FLAG_ACTIVE == 0) revert VenueInactive(venueId);
+        uint8 flags = pending
+            ? venue.flags | FLAG_PENDING_HOOK
+            : venue.flags & ~FLAG_PENDING_HOOK;
+        venues[venueId].flags = flags;
+        emit VenueFlagsChanged(venueId, flags);
+    }
+
+    /// @notice Whether a venue has capital in flight to another chain.
+    function isVenuePending(uint16 venueId) external view returns (bool) {
+        return venues[venueId].flags & FLAG_PENDING_HOOK != 0;
+    }
+
     /// @notice Record capital coming back from a venue. Router-only.
+
     /// @notice Record capital coming back from a venue. Router-only.
     ///
     /// @dev A venue that earned fees returns MORE than its book value, and the

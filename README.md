@@ -12,9 +12,10 @@ This scores venues with dilution- and cost-aware math, then routes capital only 
 
 | Contract | Address |
 |---|---|
-| `LPVault` | `0xF54C48505D246a1af07C3a8883232B5170DbBA49` |
-| `ScoreOracle` | `0xFbe3F0746Bd73f4879Eb960cf07d1f50C78067FB` |
-| `Router` | `0xcBDf1E1a8E88f3776653A29c118F38446b37c99E` |
+| `LPVault` | `0xF5aef532F1Ae10B1409A586e02A61814F92818E2` |
+| `ScoreOracle` | `0xFc0bEb61cCa025D7EC54ac1c5867b8C71d82d84B` |
+| `Router` | `0x9eBF27499dC147614F22939B721300B5D7456DfC` |
+| `CctpBridgeExecutor` | `0x25B973872bE1cC96E23D69925377AB726F37eC6E` |
 | USDC (ERC-20 shim) | `0x3600000000000000000000000000000000000000` |
 
 ### Base Sepolia — chain 84532
@@ -34,7 +35,7 @@ This scores venues with dilution- and cost-aware math, then routes capital only 
 
 **Base Sepolia** is the complete stack — fully wired, and it runs the whole cycle including routing into a live Uniswap position.
 
-**Arc** is the intended hub and runs the custody cycle today: deposit, request, settle, claim, all verified on-chain. It deliberately has **no venue registered**, because its Router reaches executors with a direct contract call, which cannot cross a chain, and Arc has no local venue. Registering one anyway would make the vault look configured while `deployIdle` reverts — which is exactly how an earlier Arc deployment came to look operable when it was not. See [Known gaps](#known-gaps).
+**Arc** is the hub. It runs the custody cycle (deposit, request, settle, claim) and **bridges to Base Sepolia over CCTP v2** — venue 2 is wired to the Base vault above.
 
 All three Arc contracts are source-verified on the explorer, so the deployed bytecode is reproducible from this repo.
 
@@ -92,6 +93,28 @@ Three contracts do the work:
 - **`Router`** — refuses to move capital unless the APR gain repays the cost of moving over the expected holding period, with hysteresis to stop the vault flip-flopping.
 
 No off-chain party holds a key that can move user funds. The reporter posts scores and NAV; only the Router moves capital, and only when the on-chain payback inequality holds.
+
+## Arc → Base Sepolia, over CCTP
+
+`Router.rebalance` reaches an executor with a direct contract call, and a direct call cannot cross a chain. A remote venue therefore needs a *local* executor that starts a bridge and returns, with the far side completing later — which is what `CctpBridgeExecutor` is, and what `IVenueExecutor.isSynchronous()` was declared for long before anything returned `false`.
+
+A live burn on Arc, 2 USDC toward the Base Sepolia vault:
+
+```
+  deployIdle(venue 2)
+    └─ CctpBridgeExecutor.enter()
+       └─ TokenMessengerV2.depositForBurn(2000000, domain 6, → 0x44dbde83…)
+
+  MessageTransmitterV2  MessageSent      destination 6, recipient = Base vault
+  TokenMessengerV2      DepositForBurn
+  CctpBridgeExecutor    BridgeInitiated  venue 2 → domain 6
+  Router                BridgeInFlight   venue 2, 2000000
+  LPVault               flags = 5        ACTIVE | PENDING_HOOK
+```
+
+**`FLAG_PENDING_HOOK` finally does something.** §5.1 reserved it and nothing set it until an async executor existed. It matters because during a bridge the capital is genuinely nowhere claimable — burned on Arc, not yet minted on Base — and `deployedAssets` alone cannot express that. `confirmArrival` clears it once the destination mints.
+
+**The asymmetry is not hidden.** `enter` works; `exit` reverts `ExitMustBeInitiatedOnDestination`, because nothing on Arc can reach into a position on Base and pull it back. Returning zero instead would let `returnToVault` succeed while no capital moved — which reads as a completed exit and is the more dangerous lie.
 
 ## The full cycle, run with real money
 
@@ -174,10 +197,10 @@ Also worth stating plainly: **Arc's native gas is 18 decimals, not 6.** Several 
 
 ## Known gaps
 
-- **No cross-chain execution.** `Router.rebalance` reaches an executor with a direct contract call, which cannot cross a chain, so the Arc Router can never drive an executor elsewhere. Closing it needs an async executor whose `enter()` initiates a CCTP burn and returns immediately. `IVenueExecutor` declares `isSynchronous()` for exactly this, and the Router never calls it.
+- **The cross-chain return leg is one-way.** Arc bridges *into* Base over CCTP and the in-flight state is tracked, but coming back must be initiated on Base — nothing on Arc can unwind a position there. A keeper unwinds on Base, bridges back, and records the arrival. Automating that round trip is the remaining work.
+- **Nothing relays the attestation.** The burn emits a CCTP `MessageSent`; minting on Base needs Circle's attestation fetched and submitted. That relayer does not exist here, so bridged capital sits burned until someone submits it.
 - **Stage 2's Meteora CPI is absent.** Validation, accounting, token custody and retry semantics are complete and tested on devnet — tokens really move. The missing hop is `add_liquidity_by_strategy`.
 - **No automation.** No daemon, no scheduler, no signer, no alerting. Every on-chain action so far was manual.
-- **Arc cannot route, only custody.** Deposit and withdrawal work; `deployIdle` reverts because no venue can honestly be registered without a reachable executor. The deploy script now says so on stdout rather than leaving it to be discovered.
 - **Stale NAV defeats the haircut** for unrealized losses. The realized case is fixed (#10); a venue that has lost value the reporter has not marked down still looks solvent.
 - **Meteora has no adapter.** The legacy REST host is retired — Cloudflare 404s every path with `cf-cache-status: HIT`. Real bin data needs on-chain reads.
 - **No `tick-level` fidelity.** Both live venues report `current-tick-liquidity`, exact only within the current tick interval.

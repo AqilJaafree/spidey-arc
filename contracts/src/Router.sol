@@ -50,6 +50,8 @@ contract Router is TransientReentrancyGuard {
     event RebalanceDeclined(uint16 indexed fromVenue, uint16 indexed toVenue, bytes4 reason);
     event CapitalReturned(uint16 indexed venueId, uint256 requested, uint256 recovered);
     event VenueWrittenOff(uint16 indexed venueId, uint256 writtenOff);
+    event BridgeInFlight(uint16 indexed venueId, uint256 amount);
+    event BridgeConfirmed(uint16 indexed venueId);
     event ExecutorSet(uint16 indexed venueId, address indexed executor);
     event ConfigChanged(uint32 expectedHoldDays, uint64 minDwell, uint32 maxNetApyBps);
     event KeeperChanged(address indexed previous, address indexed next);
@@ -309,6 +311,23 @@ contract Router is TransientReentrancyGuard {
         vault.transferToExecutor(address(executor), amount);
         vault.recordDeploy(venueId, amount, scoreBps);
         executor.enter(venueId, amount, enterData);
+
+        // An asynchronous executor has burned the capital, not deployed it —
+        // it is in flight and claimable nowhere until the destination mints.
+        // Flagging it makes that state visible on-chain instead of leaving it
+        // indistinguishable from capital sitting safely in a position.
+        if (!executor.isSynchronous()) {
+            vault.setVenuePending(venueId, true);
+            emit BridgeInFlight(venueId, amount);
+        }
+    }
+
+    /// @notice Clear a venue's in-flight flag once the destination confirms.
+    /// @dev Keeper-driven because only off-chain observation can see the
+    ///      destination mint. Arc has no way to verify it itself.
+    function confirmArrival(uint16 venueId) external onlyKeeper {
+        vault.setVenuePending(venueId, false);
+        emit BridgeConfirmed(venueId);
     }
 
     /// @notice Bring capital back from a venue to the vault.
