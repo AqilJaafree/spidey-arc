@@ -13,7 +13,13 @@
 
 import * as anchor from '@coral-xyz/anchor';
 import { Program } from '@coral-xyz/anchor';
-import { PublicKey, Keypair, SystemProgram } from '@solana/web3.js';
+import { PublicKey, Keypair, SystemProgram, SYSVAR_RENT_PUBKEY } from '@solana/web3.js';
+import {
+  TOKEN_PROGRAM_ID,
+  createMint,
+  createAccount,
+  mintTo,
+} from '@solana/spl-token';
 import { assert } from 'chai';
 
 const CREDIT_SEED = Buffer.from('credit');
@@ -33,6 +39,9 @@ describe('meteora-receiver', () => {
   const vaultAuthority = Keypair.generate().publicKey;
   const pool = Keypair.generate().publicKey;
   let credit: PublicKey;
+  let vaultTokenAccount: PublicKey;
+  let destination: PublicKey;
+  let mint: PublicKey;
 
   /** Pull `unitsConsumed` out of a simulation, per §9.1. */
   async function measureCu(ix: anchor.web3.TransactionInstruction): Promise<number> {
@@ -44,21 +53,59 @@ describe('meteora-receiver', () => {
   }
 
   before(async () => {
+    const payer = (provider.wallet as anchor.Wallet).payer;
     [credit] = PublicKey.findProgramAddressSync(
       [CREDIT_SEED, vaultAuthority.toBuffer(), pool.toBuffer()],
       program.programId,
     );
+    [vaultTokenAccount] = PublicKey.findProgramAddressSync(
+      [Buffer.from('vault'), vaultAuthority.toBuffer(), pool.toBuffer()],
+      program.programId,
+    );
+    mint = await createMint(provider.connection, payer, payer.publicKey, null, 6);
+    destination = await createAccount(provider.connection, payer, mint, payer.publicKey);
   });
+
+  /// Stage 2 now moves real tokens, so the vault must be funded before it can
+  /// be asked to deploy anything.
+  async function fundVault(amount: number) {
+    const payer = (provider.wallet as anchor.Wallet).payer;
+    await mintTo(provider.connection, payer, mint, vaultTokenAccount, payer, amount);
+  }
+
+  function deployAccounts() {
+    return {
+      caller: provider.wallet.publicKey,
+      credit,
+      vaultTokenAccount,
+      destination,
+      tokenProgram: TOKEN_PROGRAM_ID,
+    };
+  }
 
   it('creates the credit account before any CCTP message arrives', async () => {
     await program.methods
-      .initCredit(vaultAuthority, pool)
+      .initCredit(vaultAuthority, pool, destination)
       .accounts({
         payer: provider.wallet.publicKey,
         credit,
         systemProgram: SystemProgram.programId,
       })
       .rpc();
+
+    await program.methods
+      .initVault(vaultAuthority, pool)
+      .accounts({
+        payer: provider.wallet.publicKey,
+        credit,
+        vaultTokenAccount,
+        mint,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+        rent: SYSVAR_RENT_PUBKEY,
+      })
+      .rpc();
+    await fundVault(5_000e6);
 
     const acct = await (program.account as any).credit.fetch(credit);
     assert.equal(acct.amount.toNumber(), 0, 'starts empty');
@@ -129,7 +176,7 @@ describe('meteora-receiver', () => {
         activeBinId: 8_388_602, // 2 bins of drift, tolerance is 5
         minAmountOut: USDC(995),
       })
-      .accounts({ caller: provider.wallet.publicKey, credit })
+      .accounts(deployAccounts())
       .rpc();
 
     const after = await (program.account as any).credit.fetch(credit);
@@ -149,7 +196,7 @@ describe('meteora-receiver', () => {
         activeBinId: 100,
         minAmountOut: USDC(0.9),
       })
-      .accounts({ caller: provider.wallet.publicKey, credit })
+      .accounts(deployAccounts())
       .instruction();
 
     const cu = await measureCu(ix);
@@ -166,7 +213,7 @@ describe('meteora-receiver', () => {
           activeBinId: 8_390_000, // 1,400 bins away
           minAmountOut: USDC(99),
         })
-        .accounts({ caller: provider.wallet.publicKey, credit })
+        .accounts(deployAccounts())
         .rpc();
       assert.fail('should have been refused');
     } catch (e: any) {
@@ -183,7 +230,7 @@ describe('meteora-receiver', () => {
           activeBinId: 100,
           minAmountOut: new anchor.BN(0),
         })
-        .accounts({ caller: provider.wallet.publicKey, credit })
+        .accounts(deployAccounts())
         .rpc();
       assert.fail('should have been refused');
     } catch (e: any) {
@@ -200,7 +247,7 @@ describe('meteora-receiver', () => {
           activeBinId: 100,
           minAmountOut: USDC(1),
         })
-        .accounts({ caller: provider.wallet.publicKey, credit })
+        .accounts(deployAccounts())
         .rpc();
       assert.fail('should have been refused');
     } catch (e: any) {
@@ -224,7 +271,7 @@ describe('meteora-receiver', () => {
           activeBinId: 999_999, // hopeless drift
           minAmountOut: USDC(99),
         })
-        .accounts({ caller: provider.wallet.publicKey, credit })
+        .accounts(deployAccounts())
         .rpc();
       assert.fail('should have been refused');
     } catch {
@@ -243,7 +290,7 @@ describe('meteora-receiver', () => {
         activeBinId: 502,
         minAmountOut: USDC(99),
       })
-      .accounts({ caller: provider.wallet.publicKey, credit })
+      .accounts(deployAccounts())
       .rpc();
 
     const retried = await (program.account as any).credit.fetch(credit);

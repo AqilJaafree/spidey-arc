@@ -327,12 +327,20 @@ Rent       1.352 SOL
 
 Deployed for **1.354 SOL** against a 2.895 SOL default, by two changes: `opt-level = "z"` + `panic = "abort"` + `strip` cut the binary 13.6%, and `--max-len` allocates 8% headroom instead of Solana's default 2×. The rent is recoverable with `solana program close`.
 
+### Real token custody
+
+Stage 2 now moves actual SPL tokens. Until it did, the program was pure bookkeeping — it tracked `amount` and `deployed` and never held or moved a single token, so a CCTP mint into its vault would have sat there untouched while the counters climbed. Accounting that cannot be settled is worse than no accounting.
+
+The vault is a program-owned token account whose authority is the `credit` PDA, so only this program can move the funds, and the destination is **pinned at init**. A permissionless instruction that let its caller name the destination would be a drain, not a deploy — there is a devnet test asserting an attacker-chosen account receives nothing.
+
 ### Compute units, measured on-chain
 
 | Instruction | local validator | **devnet** | §9.3 budget |
 |---|---:|---:|---:|
-| `on_cctp_receive` (stage 1) | 3,841 CU | **5,841 CU** | 20,000 |
-| `deploy_position` (stage 2) | 3,711 CU | 5,278 CU | 250,000 |
+| `on_cctp_receive` (stage 1) | 3,841 CU | **6,052 CU** | 20,000 |
+| `deploy_position` (stage 2) | 3,711 CU | 12,353 CU | 250,000 |
+
+Stage 2 roughly doubled when the SPL transfer became real — the earlier figure measured a function that moved nothing.
 
 The devnet figures are higher because they were measured after the size optimization — `opt-level = "z"` trades cycles for bytes, costing ~2,000 CU to save ~28KB. On Solana that is the right trade: CU is a per-transaction cost with 15k of headroom here, while program size is permanent rent.
 
@@ -341,7 +349,7 @@ Stage 1's number is final — it does no CPI by design, so it will not grow. **S
 ### Tests
 
 - **20 unit + property tests** (`cargo test`) over the pure decision rules, including `stage1_never_panics` across the full `u64` space and `stage2_survives_extreme_bin_ids` at the `i32` boundaries where a naive `active - target` overflows.
-- **10 on-chain tests**, run against both a local validator and live devnet, including the property the design exists for: *a failed stage 2 leaves the credit intact and retryable*.
+- **15 on-chain tests**, run against both a local validator and live devnet, including the property the design exists for: *a failed stage 2 leaves the credit intact and retryable*.
 
 ```bash
 ANCHOR_PROVIDER_URL=https://api.devnet.solana.com \
@@ -406,7 +414,7 @@ For the specification's *own* worked example — $1,000 at ΔAPR 3%, cost $2 —
 
 ## Known gaps
 
-- **Stage 2's Meteora CPI is not implemented.** The validation, accounting and retry semantics are complete and tested; the `add_liquidity_by_strategy` call is not. It needs bin arrays derived from the runtime active bin, and a stub returning success would make the program look finished while doing nothing.
+- **Stage 2's Meteora CPI is not implemented.** Validation, accounting, token custody and retry semantics are complete and tested on devnet — tokens really move from the program-owned vault to the pinned destination. What is missing is the last hop: `add_liquidity_by_strategy`. It needs bin arrays derived from the runtime active bin, and a stub returning success would make the program look finished while doing nothing.
 - **Meteora has no adapter.** The legacy `dlmm-api.meteora.ag` REST host is retired — Cloudflare returns 404 on every path with `cf-cache-status: HIT`, so it is gone rather than rate-limiting. Real bin-level data needs on-chain reads via `@meteora-ag/dlmm`.
 - **No `tick-level` fidelity yet.** Both live venues report `current-tick-liquidity`, exact only within the current tick interval. True tick-level needs a Graph gateway key or on-chain tick-array reads.
 - **Hourly series are unavailable from every public source**, so §7.6's estimator hygiene (EWMA, winsorization, persistence weighting) is implemented and unit-tested but inert on live data. Affected rows carry a `point estimate` flag.

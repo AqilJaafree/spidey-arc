@@ -14,7 +14,7 @@ cpi = ["no-entrypoint"]
 no-entrypoint = []
 no-idl = []
 no-log-ix-name = []
-idl-build = ["anchor-lang/idl-build"]
+idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
 anchor-debug = []
 custom-heap = []
 custom-panic = []
@@ -22,10 +22,10 @@ custom-panic = []
 
 [dependencies]
 anchor-lang = "0.32.1"
-# anchor-spl is intentionally absent until stage 2's Meteora CPI lands. It
-# pulls solana-program -> blake3 -> cpufeatures 0.3, which requires
-# edition2024 and so cannot be built by the SBF toolchain's cargo 1.84.
-# Adding it back will need blake3/cpufeatures pinned, or newer platform-tools.
+# Buildable again now that the SBF build uses platform-tools v1.54 (rustc
+# 1.89). The earlier conflict was the DEFAULT v1.48 toolchain's cargo 1.84,
+# which cannot parse the edition2024 manifests this pulls in transitively.
+anchor-spl = "0.32.1"
 
 
 [lints.rust]
