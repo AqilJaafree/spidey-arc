@@ -63,7 +63,9 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
     event WithdrawRequested(
         uint256 indexed requestId, address indexed owner, uint256 shares, uint256 assets, uint16 epoch
     );
-    event WithdrawClaimed(uint256 indexed requestId, address indexed owner, uint256 assets);
+    event WithdrawClaimed(
+        uint256 indexed requestId, address indexed owner, uint256 assets, uint256 coverageBps
+    );
     event EpochSettled(uint16 indexed epoch, uint256 pendingAssets, uint256 idleAssets);
     event NavReported(uint256 previousDeployed, uint256 newDeployed, int256 deltaBps);
     event VenueRegistered(uint16 indexed venueId, uint8 chainDomain);
@@ -307,6 +309,41 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
         return nav.deployedAssets;
     }
 
+    /// @notice What fraction of outstanding claims the vault can actually
+    ///         cover, in basis points. 10,000 = fully covered.
+    ///
+    /// @dev `requestWithdraw` fixes a payout at the share price current when
+    ///      the holder asks. If the vault then loses value, those fixed claims
+    ///      can exceed everything it holds — found by the invariant suite as
+    ///      `pending > idle + deployed`.
+    ///
+    ///      Without a haircut the shortfall lands entirely on whoever claims
+    ///      last: early claimers are paid in full and late ones revert with
+    ///      `InsufficientIdle`, so transaction ordering decides who eats a
+    ///      loss that belongs to everyone. Scaling every claim by this factor
+    ///      shares it pro-rata instead.
+    ///
+    ///      Deliberately computed live rather than stored: a haircut is a
+    ///      statement about the vault's condition right now, and a stored one
+    ///      would keep punishing requesters after the loss had recovered.
+    function coverageBps() public view returns (uint256) {
+        return _coverageBps(assets);
+    }
+
+    /// @dev Takes already-loaded state so `claimWithdraw` does not read the
+    ///      `assets` slot twice.
+    function _coverageBps(Assets memory a) private view returns (uint256) {
+        if (a.pending == 0) return BPS;
+        // Fast path: if idle alone covers the queue then adding deployed
+        // cannot change the answer, so skip the NAV read entirely. That is
+        // the normal case for a settled epoch, and the read is a cold SLOAD
+        // on a path that has only ~1.3k of gas headroom against its budget.
+        if (a.idle >= a.pending) return BPS;
+        uint256 available = uint256(a.idle) + nav.deployedAssets;
+        if (available >= a.pending) return BPS;
+        return (available * BPS) / a.pending;
+    }
+
     /// @notice Shareholder equity: idle + deployed, less what is already owed
     ///         to withdrawal requesters.
     /// @dev Pending withdrawals are subtracted because a request fixes its
@@ -519,8 +556,12 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
         uint16 lastSettled = queue.lastSettledEpoch;
         if (p.epoch > lastSettled) revert EpochNotSettled(p.epoch, lastSettled);
 
-        owed = p.assets;
         Assets memory a = assets;
+
+        // Pay a pro-rata share of what the vault can cover. Fully covered is
+        // the normal case and leaves this exact.
+        uint256 coverage = _coverageBps(a);
+        owed = coverage == BPS ? p.assets : (uint256(p.assets) * coverage) / BPS;
         if (a.idle < owed) revert InsufficientIdle(owed, a.idle);
 
         // Zero the amount but KEEP the initialized bit, so the slot stays
@@ -530,15 +571,15 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
             PendingWithdrawal({assets: 0, epoch: p.epoch, flags: p.flags});
 
         unchecked {
-            // safe: this exact amount was added by requestWithdraw, and the
-            // zeroing above makes a second subtraction impossible. Both
+            // `pending` drops by the FULL recorded claim while only `owed` is
+            // paid: the haircut is realized here, not carried forward. Both
             // fields share a slot, so this is a single warm rewrite.
             // forge-lint: disable-next-line(unsafe-typecast)
-            assets = Assets({idle: a.idle - uint128(owed), pending: a.pending - uint128(owed)});
+            assets = Assets({idle: a.idle - uint128(owed), pending: a.pending - p.assets});
         }
 
         IERC20(asset()).safeTransfer(msg.sender, owed);
-        emit WithdrawClaimed(requestId, msg.sender, owed);
+        emit WithdrawClaimed(requestId, msg.sender, owed, coverage);
     }
 
     // -----------------------------------------------------------------------

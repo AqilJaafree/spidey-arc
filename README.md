@@ -74,11 +74,11 @@ Arc charges gas in USDC, so these are literal cents of user yield.
 
 `contracts/test/GasBudget.t.sol` asserts the spec's targets, so a regression fails the build. But those tests measure **execution gas** via `gasleft()`. A real transaction also pays the 21,000-gas intrinsic cost plus calldata, and — specific to Arc — reads through a USDC contract that is not a normal ERC-20. Both columns below are real:
 
-| Operation | **Measured on Arc** | Budget | Verdict |
-|---|---:|---:|---|
-| `deposit` (steady state) | **80,829** | 90,000 | within |
-| `requestWithdraw` (steady state) | **53,264** | 60,000 | within |
-| `claimWithdraw` | **65,774** | 70,000 | within |
+| Operation | **Measured on Arc** | Budget | Headroom |
+|---|---:|---:|---:|
+| `deposit` (steady state) | **80,881** | 90,000 | 9,119 |
+| `requestWithdraw` (steady state) | **53,316** | 60,000 | 6,684 |
+| `claimWithdraw` | **66,235** | 70,000 | 3,765 |
 | `settleEpoch` | 33,582 | — | — |
 | `deposit` (first ever, cold) | 132,121 | 90,000 | over, once per vault |
 | `requestWithdraw` (first ever per holder) | 70,329 | 60,000 | over, once per holder |
@@ -175,9 +175,9 @@ Live at chain 5042002, deployed and exercised with real funds:
 
 | Contract | Address |
 |---|---|
-| `LPVault` | `0xC3bc28D15F847300690223c67177aEa025F07831` |
-| `ScoreOracle` | `0x44dBDe83F339D23368abce56Cc1ABA2B257f1B0b` |
-| `Router` | `0x2d39A8e4C50a2E049C805e99428b11A90106F6e1` |
+| `LPVault` | `0x98A00fcD947e7afe01ef9092a5f7E0724D9419Bc` |
+| `ScoreOracle` | `0x63378527cA676f77AA7b218b30a36352769F7C16` |
+| `Router` | `0x733CC4C4f8D65Ec104cFDdCb94b77998F74c397D` |
 | USDC (ERC-20 shim) | `0x3600000000000000000000000000000000000000` |
 
 Deployment cost **0.1169 USDC** across five transactions (3 CREATE + 2 CALL, 5,436,485 gas), against a 0.2937 estimate — real gas priced below the quote.
@@ -233,6 +233,32 @@ In `fixture` mode a missing fixture is an error — it never silently falls back
 | `ETHEREUM_RPC_URL`, `ARBITRUM_RPC_URL`, `OPTIMISM_RPC_URL` | Same, for other EVM legs. |
 | `PORT` | API port (default 8787). |
 | `NEXT_PUBLIC_API_URL` | Where the UI looks for the API. |
+
+## A solvency bug the invariant suite found
+
+The vault has a stateful invariant suite (`contracts/test/invariant/`) driven by a handler that constrains the fuzzer to sequences a real user or keeper could produce. Ghost variables track what the totals *should* be, computed independently — checking the vault's numbers against its own numbers would prove nothing.
+
+At run 579 of a deep pass, this failed:
+
+```
+invariant_pendingIsBackedByAssets
+  pending (31,239,968,266) > idle + deployed (30,515,949,293)
+```
+
+The vault owed withdrawal requesters ~$724 more than it held anywhere.
+
+**Mechanism.** `requestWithdraw` fixes a payout at the share price current when the holder asks. A loss afterwards shrinks the vault's assets but leaves that fixed claim untouched. This README previously called it "borne by remaining holders" — which understated it twice:
+
+1. Remaining equity is not reduced but **clamped to zero**. Holders are wiped out, not diluted.
+2. The residual shortfall then lands entirely on **whoever claims last**. Early claimers are paid in full; late ones revert with `InsufficientIdle` and get nothing. Transaction ordering decides who eats a loss that belongs to everyone.
+
+The 500bp-per-epoch NAV guard does not prevent this: it bounds each *step*, not the cumulative drawdown.
+
+**Fix.** `coverageBps()` scales every claim by what the vault can actually cover, sharing the loss pro-rata. In the reproduction, two holders each owed $1,000 against $1,600 of assets now receive $800 each, in either claim order — where before the first claimer took $1,000 and the second took nothing. It needs no extra storage and is computed live rather than stored, so a haircut cannot outlive the loss that caused it.
+
+**Known limitation**, pinned by a test rather than left implicit: coverage is computed from what the vault *believes* it holds, including `nav.deployedAssets`. If a venue has lost capital and the reporter has not yet marked it down, the vault looks solvent and no haircut applies. §5.1's 500bp cap sharpens this — it bounds an honest markdown as tightly as a malicious one, so the protection against a compromised reporter is also a delay on telling the truth.
+
+**The suite was mutation-tested**, because a green invariant suite proves nothing until you show it can fail. Six deliberate bugs — dropping the idle debit on claim, skipping the pending credit on request, forgetting to credit returned capital, disabling the haircut, double-counting it, rounding it up — were each caught by multiple independent invariants.
 
 ## Two spec bugs found while implementing
 
