@@ -36,14 +36,7 @@ This scores venues with dilution- and cost-aware math, then routes capital only 
 
 **Arc** is the intended hub and runs the custody cycle today: deposit, request, settle, claim, all verified on-chain. It deliberately has **no venue registered**, because its Router reaches executors with a direct contract call, which cannot cross a chain, and Arc has no local venue. Registering one anyway would make the vault look configured while `deployIdle` reverts — which is exactly how an earlier Arc deployment came to look operable when it was not. See [Known gaps](#known-gaps).
 
-Arc source verification: `LPVault` and `ScoreOracle` are verified; `Router` is submitted and still indexing. Re-run with:
-
-```bash
-forge verify-contract <address> src/LPVault.sol:LPVault \
-  --verifier blockscout --verifier-url https://testnet.arcscan.app/api \
-  --chain-id 5042002 --constructor-args $(cast abi-encode \
-  "c(address,address,address,address)" $USDC $OWNER $REPORTER $OPERATOR)
-```
+All three Arc contracts are source-verified on the explorer, so the deployed bytecode is reproducible from this repo.
 
 ---
 
