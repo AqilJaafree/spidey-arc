@@ -153,6 +153,7 @@ The spec listed these as "open items to verify before committing". Checked direc
 |---|---|
 | Chain ID | **5042002** (`0x4cef52`), reth v1.11.3 |
 | RPC | `https://rpc.testnet.arc.network` |
+| Explorer | `https://testnet.arcscan.app` (Blockscout — supports source verification) |
 | CCTP domain | **26** |
 | USDC ERC-20 | `0x3600000000000000000000000000000000000000` — 6 decimals |
 | TokenMessengerV2 | `0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA` |
@@ -171,18 +172,35 @@ Several public sources report Arc's native currency as "USDC, 6 decimals". That 
 
 ### Deployed on Arc testnet
 
-Live at chain 5042002, deployed and exercised with real funds:
+Live on chain 5042002, **source-verified** on [testnet.arcscan.app](https://testnet.arcscan.app) — the deployed bytecode is reproducible from this repo at solc 0.8.28, optimizer on, 20,000 runs.
 
 | Contract | Address |
 |---|---|
-| `LPVault` | `0x98A00fcD947e7afe01ef9092a5f7E0724D9419Bc` |
-| `ScoreOracle` | `0x63378527cA676f77AA7b218b30a36352769F7C16` |
-| `Router` | `0x733CC4C4f8D65Ec104cFDdCb94b77998F74c397D` |
-| USDC (ERC-20 shim) | `0x3600000000000000000000000000000000000000` |
+| `LPVault` | [`0x98A00fcD947e7afe01ef9092a5f7E0724D9419Bc`](https://testnet.arcscan.app/address/0x98A00fcD947e7afe01ef9092a5f7E0724D9419Bc) |
+| `ScoreOracle` | [`0x63378527cA676f77AA7b218b30a36352769F7C16`](https://testnet.arcscan.app/address/0x63378527cA676f77AA7b218b30a36352769F7C16) |
+| `Router` | [`0x733CC4C4f8D65Ec104cFDdCb94b77998F74c397D`](https://testnet.arcscan.app/address/0x733CC4C4f8D65Ec104cFDdCb94b77998F74c397D) |
+| USDC (ERC-20 shim) | [`0x3600000000000000000000000000000000000000`](https://testnet.arcscan.app/address/0x3600000000000000000000000000000000000000) |
 
-Deployment cost **0.1169 USDC** across five transactions (3 CREATE + 2 CALL, 5,436,485 gas), against a 0.2937 estimate — real gas priced below the quote.
+Wiring confirmed by reading the chain, not the deploy log:
 
-Verified on-chain after deployment: `asset()` points at USDC, `router()` at the Router, caps set to $100k total / $25k per venue, both venues registered with `activeVenueBitmap = 6` (bits 1 and 2). A real 5 USDC deposit minted 5e9 shares — exactly the 3-decimal virtual-share offset — and a withdrawal request queued correctly.
+```
+LPVault.asset()        -> 0x3600…0000   (USDC, 6dp)
+LPVault.router()       -> 0x733CC4C4…   (Router)
+LPVault.symbol()       -> spUSDC, 9 decimals  (6 asset + 3 virtual-share offset)
+Router.vault()         -> 0x98A00fcD…   (LPVault)
+Router.scoreOracle()   -> 0x63378527…   (ScoreOracle)
+LPVault.coverageBps()  -> 10000         (fully solvent)
+```
+
+Deployment costs ~0.117 USDC across five transactions. Re-verify after any redeploy with:
+
+```bash
+forge verify-contract <address> src/LPVault.sol:LPVault \
+  --verifier blockscout --verifier-url https://testnet.arcscan.app/api \
+  --chain-id 5042002 \
+  --constructor-args $(cast abi-encode "c(address,address,address,address)" \
+    0x3600000000000000000000000000000000000000 $OWNER $REPORTER $OPERATOR)
+```
 
 ### Deploying
 

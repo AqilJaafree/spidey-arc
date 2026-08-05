@@ -56,6 +56,8 @@ export const CCTP_DOMAIN = {
 export const ARC_TESTNET = {
   chainId: 5042002,
   rpcUrl: 'https://rpc.testnet.arc.network',
+  /** Blockscout-based, and it accepts `forge verify-contract`. */
+  explorerUrl: 'https://testnet.arcscan.app',
   cctpDomain: 26,
   /**
    * The optional ERC-20 interface over the native USDC balance. Same money,
