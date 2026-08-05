@@ -183,6 +183,66 @@ contract CctpBridgeTest is Fixtures {
         bridge.enter(VENUE_B, 1_000 * USDC_ONE, _bridgeParams(1e6, 2000));
     }
 
+    /// @dev The round trip: burn out, and later book what mints back in.
+    ///      The return leg arrives as a CCTP mint, so no executor calls back
+    ///      and `returnToVault` has nothing to trigger on.
+    function test_roundTripBooksCapitalThatBridgesBack() public {
+        depositAs(alice, 10_000 * USDC_ONE);
+        _deployToBase(10_000 * USDC_ONE, _bridgeParams(1 * USDC_ONE, 2000));
+
+        assertTrue(vault.isVenuePending(VENUE_B), "in flight");
+        assertEq(vault.deployedAssets(), 10_000 * USDC_ONE, "booked as deployed");
+        assertEq(vault.idleAssets(), 0, "nothing idle");
+
+        // The far side unwinds and bridges back; CCTP mints into the vault.
+        // 9,900 comes home — 100 lost to bridge fee and slippage.
+        usdc.mint(address(vault), 9_900 * USDC_ONE);
+        assertEq(vault.unaccountedBalance(), 9_900 * USDC_ONE, "arrived, not yet booked");
+
+        vm.prank(keeper);
+        uint256 booked = router.recordBridgeArrival(VENUE_B, 9_900 * USDC_ONE);
+
+        assertEq(booked, 9_900 * USDC_ONE, "booked what landed");
+        assertEq(vault.idleAssets(), 9_900 * USDC_ONE, "now idle and usable");
+        assertEq(vault.unaccountedBalance(), 0, "nothing left ambiguous");
+        assertFalse(vault.isVenuePending(VENUE_B), "no longer in flight");
+        (uint128 book,,,,,) = vault.venues(VENUE_B);
+        assertEq(book, 100 * USDC_ONE, "the shortfall is still on the book");
+    }
+
+    /// @dev The guard that keeps a keeper from conjuring assets. Claiming an
+    ///      arrival that did not happen would credit idle against tokens that
+    ///      do not exist and break solvency outright.
+    function test_cannotBookAnArrivalThatDidNotHappen() public {
+        depositAs(alice, 10_000 * USDC_ONE);
+        _deployToBase(10_000 * USDC_ONE, _bridgeParams(1 * USDC_ONE, 2000));
+
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(LPVault.NoSuchArrival.selector, 10_000 * USDC_ONE, 0));
+        router.recordBridgeArrival(VENUE_B, 10_000 * USDC_ONE);
+
+        assertEq(vault.idleAssets(), 0, "no assets conjured");
+    }
+
+    /// @dev And it can never book more than actually landed.
+    function testFuzz_bookedNeverExceedsWhatArrived(uint96 rawArrived, uint96 rawClaimed) public {
+        uint256 arrived = bound(uint256(rawArrived), 1, 50_000e6);
+        uint256 claimed = bound(uint256(rawClaimed), 1, 100_000e6);
+
+        depositAs(alice, 100_000 * USDC_ONE);
+        _deployToBase(100_000 * USDC_ONE, _bridgeParams(1 * USDC_ONE, 2000));
+        usdc.mint(address(vault), arrived);
+
+        vm.prank(keeper);
+        if (claimed <= arrived) {
+            assertEq(router.recordBridgeArrival(VENUE_B, claimed), claimed);
+            assertLe(vault.idleAssets(), usdc.balanceOf(address(vault)), "still solvent");
+        } else {
+            vm.expectRevert();
+            router.recordBridgeArrival(VENUE_B, claimed);
+        }
+    }
+
     function test_declaresItselfAsynchronous() public view {
         assertFalse(bridge.isSynchronous(), "a bridge cannot settle in one transaction");
     }

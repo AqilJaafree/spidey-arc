@@ -52,6 +52,7 @@ contract Router is TransientReentrancyGuard {
     event VenueWrittenOff(uint16 indexed venueId, uint256 writtenOff);
     event BridgeInFlight(uint16 indexed venueId, uint256 amount);
     event BridgeConfirmed(uint16 indexed venueId);
+    event BridgeReturned(uint16 indexed venueId, uint256 amount);
     event ExecutorSet(uint16 indexed venueId, address indexed executor);
     event ConfigChanged(uint32 expectedHoldDays, uint64 minDwell, uint32 maxNetApyBps);
     event KeeperChanged(address indexed previous, address indexed next);
@@ -320,6 +321,24 @@ contract Router is TransientReentrancyGuard {
             vault.setVenuePending(venueId, true);
             emit BridgeInFlight(venueId, amount);
         }
+    }
+
+    /// @notice Book capital that has bridged back and clear the in-flight
+    ///         flag, completing the round trip.
+    /// @dev The counterpart to `returnToVault` for an asynchronous venue.
+    ///      That path calls `executor.exit()`, which a bridge executor
+    ///      refuses because nothing here can unwind a position on another
+    ///      chain. Capital instead arrives as a CCTP mint, and this records
+    ///      it — bounded by what actually landed.
+    function recordBridgeArrival(uint16 venueId, uint256 amount)
+        external
+        onlyKeeper
+        returns (uint256 booked)
+    {
+        if (amount == 0) revert ZeroAmount();
+        booked = vault.recordBridgeArrival(venueId, amount);
+        vault.setVenuePending(venueId, false);
+        emit BridgeReturned(venueId, booked);
     }
 
     /// @notice Clear a venue's in-flight flag once the destination confirms.

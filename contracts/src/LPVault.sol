@@ -57,6 +57,7 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
     error ZeroShares();
     error VaultNotEmpty(uint256 outstanding);
     error CapitalStillDeployed(uint256 deployed);
+    error NoSuchArrival(uint256 claimed, uint256 actuallyArrived);
 
     // -----------------------------------------------------------------------
     // Events — §8.1: history lives in logs, not storage.
@@ -80,6 +81,7 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
     event UnaccountedRescued(address indexed to, uint256 amount);
     event OrphanedIdleSwept(address indexed to, uint256 amount);
     event VenueClosed(uint16 indexed venueId, uint256 writtenOff);
+    event BridgeArrived(uint16 indexed venueId, uint256 amount);
 
     // -----------------------------------------------------------------------
     // Constants
@@ -750,6 +752,50 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
         // forge-lint: disable-next-line(unsafe-typecast)
         nav.deployedAssets = nav.deployedAssets + uint128(amount);
         emit Deployed(venueId, amount);
+    }
+
+    /// @notice Book capital that arrived by CCTP mint rather than by an
+    ///         executor transfer. Router-only.
+    ///
+    /// @dev The return leg of a cross-chain venue lands as a *mint* straight
+    ///      into this contract, so no executor ever calls back and
+    ///      `recordReturn` has nothing to be triggered by. Without this the
+    ///      capital sits as unaccounted balance while the venue's book still
+    ///      claims it, and the vault permanently believes it is deployed.
+    ///
+    ///      Guarded on `unaccountedBalance()`: the amount booked can never
+    ///      exceed tokens that genuinely arrived and are not already counted.
+    ///      A keeper cannot conjure idle by asserting an arrival that did not
+    ///      happen, which would otherwise break solvency outright.
+    function recordBridgeArrival(uint16 venueId, uint256 amount)
+        external
+        onlyRouter
+        returns (uint256 booked)
+    {
+        uint256 arrived = unaccountedBalance();
+        if (amount > arrived) revert NoSuchArrival(amount, arrived);
+
+        VenueState memory venue = venues[venueId];
+        // forge-lint: disable-next-line(unsafe-typecast)
+        uint128 bookReduction =
+            amount > venue.deployedAssets ? venue.deployedAssets : uint128(amount);
+
+        unchecked {
+            venues[venueId] = VenueState({
+                deployedAssets: venue.deployedAssets - bookReduction,
+                lastRebalanceAt: uint64(block.timestamp),
+                scoreBps: venue.scoreBps,
+                venueId: venue.venueId,
+                chainDomain: venue.chainDomain,
+                flags: venue.flags
+            });
+            nav.deployedAssets -= bookReduction;
+        }
+
+        // forge-lint: disable-next-line(unsafe-typecast)
+        assets.idle = assets.idle + uint128(amount);
+        booked = amount;
+        emit BridgeArrived(venueId, amount);
     }
 
     /// @notice Mark a venue as having capital in flight. Router-only.

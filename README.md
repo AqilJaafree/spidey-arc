@@ -12,10 +12,10 @@ This scores venues with dilution- and cost-aware math, then routes capital only 
 
 | Contract | Address |
 |---|---|
-| `LPVault` | `0xF5aef532F1Ae10B1409A586e02A61814F92818E2` |
-| `ScoreOracle` | `0xFc0bEb61cCa025D7EC54ac1c5867b8C71d82d84B` |
-| `Router` | `0x9eBF27499dC147614F22939B721300B5D7456DfC` |
-| `CctpBridgeExecutor` | `0x25B973872bE1cC96E23D69925377AB726F37eC6E` |
+| `LPVault` | `0x6501D3c8D48F73905ea8744EB3D11208CaC1B0fb` |
+| `ScoreOracle` | `0x6ca24B702A930f0255817C8063eA0A068a3Bb27C` |
+| `Router` | `0xFC39214E583633a89D3e646abF3fd111C2A08DDA` |
+| `CctpBridgeExecutor` | `0x60DcC29Ae69dc22A4d914194704651E3f75e5537` |
 | USDC (ERC-20 shim) | `0x3600000000000000000000000000000000000000` |
 
 ### Base Sepolia — chain 84532
@@ -115,6 +115,29 @@ A live burn on Arc, 2 USDC toward the Base Sepolia vault:
 **`FLAG_PENDING_HOOK` finally does something.** §5.1 reserved it and nothing set it until an async executor existed. It matters because during a bridge the capital is genuinely nowhere claimable — burned on Arc, not yet minted on Base — and `deployedAssets` alone cannot express that. `confirmArrival` clears it once the destination mints.
 
 **The asymmetry is not hidden.** `enter` works; `exit` reverts `ExitMustBeInitiatedOnDestination`, because nothing on Arc can reach into a position on Base and pull it back. Returning zero instead would let `returnToVault` succeed while no capital moved — which reads as a completed exit and is the more dangerous lie.
+
+### The return leg
+
+Capital comes back as a CCTP **mint**, not an executor transfer — so nothing calls back and `returnToVault` has nothing to trigger on. `recordBridgeArrival` books it instead, bounded by `unaccountedBalance()`: a keeper cannot conjure idle by asserting an arrival that never happened, which would break solvency outright.
+
+```
+  Arc                                          Base Sepolia
+  ───                                          ────────────
+  deployIdle ──burn──► MessageSent
+                          │
+                          └──attestation──► receiveMessage ──► USDC mints
+                                                                    │
+        MessageSent ◄──burn── depositForBurn ◄──────────────────────┘
+             │
+             └──attestation──► receiveMessage ──► USDC mints at the vault
+                                                       │
+                             recordBridgeArrival ◄──────┘
+                               books it, clears PENDING_HOOK
+```
+
+A round trip needs four transactions across two chains and two attestations. The relaying is manual here — see [Known gaps](#known-gaps).
+
+**Pick the finality tier deliberately.** `minFinalityThreshold` 2000 (standard) waits for hard finality, which on Base Sepolia is 13–19 minutes; 1000 (fast) settles in seconds for a fee. §7.5's payback rule already prices the wait, so the engine should choose — the contract only bounds the fee.
 
 ## The full cycle, run with real money
 
