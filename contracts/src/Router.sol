@@ -48,6 +48,7 @@ contract Router is TransientReentrancyGuard {
         uint256 paybackDaysScaled
     );
     event RebalanceDeclined(uint16 indexed fromVenue, uint16 indexed toVenue, bytes4 reason);
+    event CapitalReturned(uint16 indexed venueId, uint256 requested, uint256 recovered);
     event ExecutorSet(uint16 indexed venueId, address indexed executor);
     event ConfigChanged(uint32 expectedHoldDays, uint64 minDwell, uint32 maxNetApyBps);
     event KeeperChanged(address indexed previous, address indexed next);
@@ -307,6 +308,42 @@ contract Router is TransientReentrancyGuard {
         vault.transferToExecutor(address(executor), amount);
         vault.recordDeploy(venueId, amount, scoreBps);
         executor.enter(venueId, amount, enterData);
+    }
+
+    /// @notice Bring capital back from a venue to the vault.
+    ///
+    /// @dev The operation the Router was missing. `deployIdle` sends capital
+    ///      out and `rebalance` moves it between venues, but neither returns
+    ///      it — and `rebalance` cannot be bent into doing so, since it
+    ///      requires a distinct destination venue and a positive APR edge.
+    ///
+    ///      Without this, capital was one-way. `claimWithdraw` pays from idle
+    ///      and `settleEpoch` assumes the capital came home, but nothing could
+    ///      bring it home: every deposit that had been deployed was
+    ///      unrecoverable. Found by running the full deposit → deploy →
+    ///      withdraw cycle on Base Sepolia rather than by reading the code.
+    ///
+    ///      Deliberately has no payback test. There is no destination venue to
+    ///      compare against and no edge to evaluate — this exists to satisfy
+    ///      withdrawals, and gating an exit on profitability is how a vault
+    ///      traps its depositors. Dwell is not enforced either, for the same
+    ///      reason: a queue that has to wait 12 hours because capital moved
+    ///      recently is a queue that fails when it matters.
+    function returnToVault(uint16 venueId, uint256 amount, bytes calldata exitData)
+        external
+        onlyKeeper
+        nonReentrant
+        returns (uint256 recovered)
+    {
+        if (amount == 0) revert ZeroAmount();
+
+        IVenueExecutor executor = executors[venueId];
+        if (address(executor) == address(0)) revert NoExecutor(venueId);
+
+        recovered = executor.exit(venueId, amount, exitData);
+        vault.recordReturn(venueId, recovered);
+
+        emit CapitalReturned(venueId, amount, recovered);
     }
 
     // -----------------------------------------------------------------------

@@ -55,6 +55,7 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
     error ClaimPendingFirst(uint16 pendingEpoch, uint16 currentEpoch);
     error AmountTooLarge();
     error ZeroShares();
+    error VaultNotEmpty(uint256 outstanding);
 
     // -----------------------------------------------------------------------
     // Events — §8.1: history lives in logs, not storage.
@@ -76,6 +77,7 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
     event RoleChanged(bytes32 indexed role, address indexed previous, address indexed next);
     event IdleSynced(uint256 recovered, uint256 newIdle);
     event UnaccountedRescued(address indexed to, uint256 amount);
+    event OrphanedIdleSwept(address indexed to, uint256 amount);
 
     // -----------------------------------------------------------------------
     // Constants
@@ -292,6 +294,40 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
         if (amount == 0) return 0;
         IERC20(asset()).safeTransfer(to, amount);
         emit UnaccountedRescued(to, amount);
+    }
+
+    /// @notice Recover accounted idle when the vault has no shareholders.
+    ///
+    /// @dev A venue can return more than it was given — a profitable exit, or
+    ///      on a thin pool, favourable round-trip slippage. That surplus lands
+    ///      in `idle` as accounted equity. If every holder has since exited,
+    ///      `totalSupply` is zero and the surplus becomes unclaimable:
+    ///
+    ///        - no shares exist to redeem against it;
+    ///        - {rescueUnaccounted} cannot reach it, since it is accounted;
+    ///        - a new depositor does not inherit it either, because the
+    ///          virtual-share offset that blocks the donation attack also
+    ///          correctly refuses to hand them somebody else's residual.
+    ///
+    ///      Observed on Base Sepolia: a 10 USDC deposit round-tripped and
+    ///      returned 14.6, leaving 4.6 stranded once the depositor exited.
+    ///
+    ///      Guarded on `totalSupply() == 0` and no pending claims, so it can
+    ///      never touch depositor funds — if anybody holds a share or is owed
+    ///      a withdrawal, this reverts.
+    function sweepOrphanedIdle(address to) external onlyOwner returns (uint256 amount) {
+        if (to == address(0)) revert ZeroAddress();
+        if (totalSupply() != 0) revert VaultNotEmpty(totalSupply());
+
+        Assets memory a = assets;
+        if (a.pending != 0) revert VaultNotEmpty(a.pending);
+
+        amount = a.idle;
+        if (amount == 0) return 0;
+
+        assets = Assets({idle: 0, pending: 0});
+        IERC20(asset()).safeTransfer(to, amount);
+        emit OrphanedIdleSwept(to, amount);
     }
 
     /// @notice Fold unaccounted balance into vault equity. Owner-only, because

@@ -138,6 +138,108 @@ contract CaseStudiesTest is Fixtures {
     }
 
     // -----------------------------------------------------------------------
+    // CASE 11 — the full lifecycle: deposit, deploy, withdraw
+    // -----------------------------------------------------------------------
+
+    /// @dev Found by running this on Base Sepolia rather than by reading the
+    ///      code: there was no way to bring capital back. `deployIdle` sends
+    ///      it out, `rebalance` moves it between venues, and neither returns
+    ///      it — so once deployed, every deposit was unrecoverable.
+    function test_CASE11_capitalCanComeHomeToSatisfyAWithdrawal() public {
+        uint256 shares = depositAs(alice, 10_000 * USDC_ONE);
+        _deploy(VENUE_A, 10_000 * USDC_ONE);
+        assertEq(vault.idleAssets(), 0, "everything is deployed");
+
+        vm.prank(alice);
+        uint256 id = vault.requestWithdraw(shares);
+
+        // Without `returnToVault` this is where a real vault would be stuck.
+        vm.prank(keeper);
+        uint256 recovered = router.returnToVault(VENUE_A, 10_000 * USDC_ONE, "");
+        assertEq(recovered, 10_000 * USDC_ONE, "capital came home");
+
+        vm.prank(operator);
+        vault.settleEpoch();
+        vm.prank(alice);
+        assertEq(vault.claimWithdraw(id), 10_000 * USDC_ONE, "and the depositor was paid");
+    }
+
+    /// @dev An exit must never be gated on profitability — that is how a vault
+    ///      traps its depositors. `returnToVault` runs no payback test.
+    function test_CASE12_exitIsNotGatedOnAnAprEdge() public {
+        depositAs(alice, 1_000 * USDC_ONE);
+        _deploy(VENUE_A, 1_000 * USDC_ONE);
+
+        // $1,000 is a size at which `rebalance` would refuse to move at all.
+        vm.prank(keeper);
+        uint256 recovered = router.returnToVault(VENUE_A, 1_000 * USDC_ONE, "");
+        assertEq(recovered, 1_000 * USDC_ONE, "small positions can still exit");
+    }
+
+    /// @dev Only the keeper may pull capital back.
+    function test_CASE13_returnToVaultIsKeeperOnly() public {
+        depositAs(alice, 1_000 * USDC_ONE);
+        _deploy(VENUE_A, 1_000 * USDC_ONE);
+
+        vm.prank(alice);
+        vm.expectRevert(Router.NotKeeper.selector);
+        router.returnToVault(VENUE_A, 1_000 * USDC_ONE, "");
+    }
+
+    /// @dev Surplus stranded after the last holder leaves. Observed on Base
+    ///      Sepolia: a 10 USDC deposit returned 14.6, and once the depositor
+    ///      exited the 4.6 belonged to nobody.
+    function test_CASE14_surplusStrandedAfterLastHolderExitsIsRecoverable() public {
+        uint256 shares = depositAs(alice, 1_000 * USDC_ONE);
+        _deploy(VENUE_A, 1_000 * USDC_ONE);
+
+        // The venue returns more than it took.
+        usdc.mint(address(executorA), 200 * USDC_ONE);
+        executorA.setEntered(1_200 * USDC_ONE);
+
+        vm.prank(alice);
+        uint256 id = vault.requestWithdraw(shares);
+        vm.prank(keeper);
+        router.returnToVault(VENUE_A, 1_200 * USDC_ONE, "");
+        vm.prank(operator);
+        vault.settleEpoch();
+        vm.prank(alice);
+        vault.claimWithdraw(id);
+
+        // Alice is gone; a surplus remains that no share can claim.
+        assertEq(vault.totalSupply(), 0, "no holders left");
+        assertGt(vault.idleAssets(), 0, "but idle is not empty");
+        assertEq(vault.unaccountedBalance(), 0, "and rescueUnaccounted cannot see it");
+
+        uint256 stranded = vault.idleAssets();
+        uint256 before = usdc.balanceOf(owner);
+        vm.prank(owner);
+        assertEq(vault.sweepOrphanedIdle(owner), stranded, "recovered");
+        assertEq(usdc.balanceOf(owner) - before, stranded, "delivered");
+        assertEq(vault.idleAssets(), 0, "nothing stranded");
+    }
+
+    /// @dev The guard that makes it safe: it can never touch depositor funds.
+    function test_CASE15_sweepRefusesWhileAnyoneHoldsShares() public {
+        depositAs(alice, 1_000 * USDC_ONE);
+        vm.prank(owner);
+        vm.expectRevert();
+        vault.sweepOrphanedIdle(owner);
+    }
+
+    /// @dev And never while a withdrawal is still owed.
+    function test_CASE16_sweepRefusesWhileAClaimIsOutstanding() public {
+        uint256 shares = depositAs(alice, 1_000 * USDC_ONE);
+        vm.prank(alice);
+        vault.requestWithdraw(shares);
+
+        assertEq(vault.totalSupply(), 0, "shares burned at request time");
+        vm.prank(owner);
+        vm.expectRevert(); // pending is non-zero
+        vault.sweepOrphanedIdle(owner);
+    }
+
+    // -----------------------------------------------------------------------
     // CASE 5 — everyone leaves at once
     // -----------------------------------------------------------------------
 

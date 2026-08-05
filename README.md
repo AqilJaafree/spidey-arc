@@ -220,6 +220,34 @@ forge verify-contract <address> src/LPVault.sol:LPVault \
     0x3600000000000000000000000000000000000000 $OWNER $REPORTER $OPERATOR)
 ```
 
+### Live on Base Sepolia — a complete, working stack
+
+Arc is the hub, but `Router.rebalance` reaches an executor with a **direct contract call**, which cannot cross a chain. The Arc Router can therefore never drive an executor on another chain, and the cross-chain leg needs an async executor that does not exist yet.
+
+So the whole stack is also deployed locally on Base Sepolia, where the routing logic runs end to end against a real Uniswap v3 pool:
+
+| Contract | Address |
+|---|---|
+| `LPVault` | `0x4f581A4cEb0c1448f1eC60410b01953D8d5DC184` |
+| `ScoreOracle` | `0xcEd07b12523095C4267Fa3aDfD8A79d15dF79023` |
+| `Router` | `0x39f05803Cd46DBCee98b86Ce1c0bFaaeeA9712Ff` |
+| `UniV3Executor` | `0x660b01E478E9107546b772F3912966AB4e2B0309` |
+
+Deployment cost **0.000046 ETH**. Unlike the Arc deployment, this one is fully wired: venue 1 registered, executor set, caps 10k/5k USDC.
+
+The full cycle, run with real money:
+
+```
+  postScores      root built by @spidey/keeper, verified on-chain
+  deposit 10 USDC → 10e9 spUSDC shares
+  deployIdle      → LIVE Uniswap v3 position, tokenId 81591
+                    USDC/WETH 0.3%, ticks [195540, 195960]
+  requestWithdraw → shares burn, payout fixed
+  returnToVault   → position unwound, capital home
+  settleEpoch
+  claimWithdraw   → 10.0000 USDC returned
+```
+
 ### Deploying
 
 Signing uses an encrypted Foundry keystore, so no private key is ever read from the environment or written to disk in the clear.
@@ -368,6 +396,26 @@ anchor idl build > target/idl/meteora_receiver.json   # IDL uses the host toolch
 ```
 
 `anchor-spl` is deliberately not a dependency — it pulls `solana-program → blake3 → cpufeatures 0.3`, which reintroduces the same conflict. It will need pinning when stage 2's CPI lands.
+
+## Two bugs found by running the flow, not reading the code
+
+### Capital was one-way
+
+`Router` had `deployIdle` (vault → venue) and `rebalance` (venue → venue). **Neither returns capital to the vault**, and `rebalance` cannot be bent into it — it requires a distinct destination venue and a positive APR edge.
+
+So once deployed, capital could never come home. `claimWithdraw` pays from idle and `settleEpoch` assumes the capital returned, but nothing could return it: **every deposit that had been deployed was unrecoverable.**
+
+This demonstrated itself with real money. The first Base Sepolia deployment took a 20 USDC deposit into a live Uniswap position, and that capital is still stuck there — the deployed Router has no function that can retrieve it.
+
+`returnToVault` fixes it. Deliberately no payback test and no dwell: there is no destination venue to compare against, and gating an exit on profitability is how a vault traps its depositors.
+
+### Surplus stranded after the last holder leaves
+
+A venue can return more than it was given. That surplus lands in `idle` as accounted equity — and if every holder has since exited, it becomes unclaimable: no shares exist to redeem against it, `rescueUnaccounted` cannot reach it because it *is* accounted, and a new depositor does not inherit it either, since the virtual-share offset that blocks the donation attack also correctly refuses to hand them somebody else's residual.
+
+Observed live: a 10 USDC deposit round-tripped and returned 14.6, leaving 4.6 stranded. (That surplus was thin-pool round-trip slippage in the test, not yield — but the stranding is real either way.)
+
+`sweepOrphanedIdle` recovers it, guarded on `totalSupply() == 0` *and* no pending claims, so it can never touch depositor funds.
 
 ## Case studies: sequences, not single calls
 
