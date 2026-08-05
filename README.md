@@ -300,19 +300,38 @@ credit.amount = credit.amount.checked_add(params.amount).unwrap();
 
 Stage 1's whole computation is expressed as a function that returns a value rather than a `Result` — the "cannot fail" requirement encoded in a type, then proven across the full `u64` space by property test.
 
-### Compute units, measured on a validator
+### Live on devnet
 
-| Instruction | Measured | §9.3 budget |
-|---|---:|---:|
-| `on_cctp_receive` (stage 1) | **3,841 CU** | 20,000 |
-| `deploy_position` (stage 2) | 3,711 CU | 250,000 |
+```
+Program    FnQGhy6uoFQ3tUuTZ5gwNJhMi1dELcAR7MobwgVLdA4y
+Authority  6aYhp5SwU8to5ca8wjukJ9y5Tn3rByVVCJKmqotNoeHv
+Size       179,712 bytes (194,088 allocated)
+Rent       1.352 SOL
+```
 
-Stage 1's number is real and final — it does no CPI by design, so it will not grow. **Stage 2's is not meaningful yet**: the Meteora `add_liquidity_by_strategy` CPI is not implemented, and that CPI is essentially the entire 250k budget. The number will move a great deal once it lands.
+Deployed for **1.354 SOL** against a 2.895 SOL default, by two changes: `opt-level = "z"` + `panic = "abort"` + `strip` cut the binary 13.6%, and `--max-len` allocates 8% headroom instead of Solana's default 2×. The rent is recoverable with `solana program close`.
+
+### Compute units, measured on-chain
+
+| Instruction | local validator | **devnet** | §9.3 budget |
+|---|---:|---:|---:|
+| `on_cctp_receive` (stage 1) | 3,841 CU | **5,841 CU** | 20,000 |
+| `deploy_position` (stage 2) | 3,711 CU | 5,278 CU | 250,000 |
+
+The devnet figures are higher because they were measured after the size optimization — `opt-level = "z"` trades cycles for bytes, costing ~2,000 CU to save ~28KB. On Solana that is the right trade: CU is a per-transaction cost with 15k of headroom here, while program size is permanent rent.
+
+Stage 1's number is final — it does no CPI by design, so it will not grow. **Stage 2's is not meaningful yet**: the Meteora `add_liquidity_by_strategy` CPI is not implemented, and that CPI is essentially the entire 250k budget.
 
 ### Tests
 
 - **20 unit + property tests** (`cargo test`) over the pure decision rules, including `stage1_never_panics` across the full `u64` space and `stage2_survives_extreme_bin_ids` at the `i32` boundaries where a naive `active - target` overflows.
-- **10 on-chain tests** against a local validator, including the property the design exists for: *a failed stage 2 leaves the credit intact and retryable*.
+- **10 on-chain tests**, run against both a local validator and live devnet, including the property the design exists for: *a failed stage 2 leaves the credit intact and retryable*.
+
+```bash
+ANCHOR_PROVIDER_URL=https://api.devnet.solana.com \
+ANCHOR_WALLET=.keys/deployer.json \
+  npx ts-mocha -p ./tsconfig.json -t 1000000 "tests/**/*.ts"
+```
 
 ### Toolchain note
 
@@ -343,7 +362,6 @@ For the specification's *own* worked example — $1,000 at ΔAPR 3%, cost $2 —
 ## Known gaps
 
 - **Stage 2's Meteora CPI is not implemented.** The validation, accounting and retry semantics are complete and tested; the `add_liquidity_by_strategy` call is not. It needs bin arrays derived from the runtime active bin, and a stub returning success would make the program look finished while doing nothing.
-- **Not deployed to devnet.** The faucet is rate-limited and the program needs 1.45 SOL rent-exempt. Deployer is `6aYhp5SwU8to5ca8wjukJ9y5Tn3rByVVCJKmqotNoeHv` — fund it at [faucet.solana.com](https://faucet.solana.com), then `anchor deploy --provider.cluster devnet`.
 - **Meteora has no adapter.** The legacy `dlmm-api.meteora.ag` REST host is retired — Cloudflare returns 404 on every path with `cf-cache-status: HIT`, so it is gone rather than rate-limiting. Real bin-level data needs on-chain reads via `@meteora-ag/dlmm`.
 - **No `tick-level` fidelity yet.** Both live venues report `current-tick-liquidity`, exact only within the current tick interval. True tick-level needs a Graph gateway key or on-chain tick-array reads.
 - **Hourly series are unavailable from every public source**, so §7.6's estimator hygiene (EWMA, winsorization, persistence weighting) is implemented and unit-tested but inert on live data. Affected rows carry a `point estimate` flag.

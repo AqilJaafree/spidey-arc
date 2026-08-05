@@ -8,6 +8,12 @@ resolver = "2"
 overflow-checks = true
 lto = "fat"
 codegen-units = 1
+# Optimize for size: rent is charged per byte, and on Solana a program's
+# size is a permanent cost rather than a one-off. `panic = "abort"` also
+# drops the unwinding machinery, which the SVM never uses — it aborts.
+opt-level = "z"
+panic = "abort"
+strip = true
 [profile.release.build-override]
 opt-level = 3
 incremental = false

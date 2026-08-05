@@ -30,7 +30,7 @@ use anchor_lang::prelude::*;
 pub mod rules;
 use rules::{available, check_deploy, credit_after_receive, DeployRejection};
 
-declare_id!("9rLxHm1z9okw7Fi1XgiGQtBgU5HjLadAMJpgz4wNyNLr");
+declare_id!("FnQGhy6uoFQ3tUuTZ5gwNJhMi1dELcAR7MobwgVLdA4y");
 
 /// Seed for the per-(vault authority, pool) credit account.
 pub const CREDIT_SEED: &[u8] = b"credit";
