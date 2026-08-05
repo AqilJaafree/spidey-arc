@@ -40,7 +40,16 @@ function pool(overrides: Partial<NormalizedPool> & Pick<NormalizedPool, 'poolId'
 const VENUE_IDS: Record<string, number> = { here: 1, away: 2 };
 const venueIdOf = (p: { poolId: string }) => VENUE_IDS[p.poolId];
 
-const here = pool({ poolId: 'here', priceHistogram: [{ bpsFromPeg: 0, volumeUsd: 3_000_000 }] });
+// Venue 1 is the hub-local venue, as in `contracts/test/Fixtures.sol`. Keeping
+// it on Arc's own domain is what makes a one-transaction `rebalance` out of it
+// expressible at all: a venue on another chain has to be exited from that
+// chain, which is `crossChainPlan.test.ts`'s subject.
+const here = pool({
+  poolId: 'here',
+  chain: 'arc',
+  cctpDomain: 26,
+  priceHistogram: [{ bpsFromPeg: 0, volumeUsd: 3_000_000 }],
+});
 // Only 5% more flow than `here`. A large edge would pay back in about a day
 // even at $1,000, which would make the size-dependence tests vacuous — the
 // interesting regime is a thin edge where position size decides the answer.
