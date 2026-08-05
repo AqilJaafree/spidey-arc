@@ -80,6 +80,9 @@ importers:
 
   packages/keeper:
     dependencies:
+      '@circle-fin/adapter-solana':
+        specifier: ^1.6.4
+        version: 1.6.4(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6))(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
       '@circle-fin/adapter-viem-v2':
         specifier: ^1.14.1
         version: 1.14.1(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)(viem@2.55.10(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)(zod@3.25.67))
@@ -108,6 +111,12 @@ packages:
   '@babel/runtime@7.29.7':
     resolution: {integrity: sha512-Nq8OhGWiZIZGV6hLHoyAKLLcJihP/xFeBMGJoUrxTX2psI8dCifzLhZISFb+VWS3wFMRDmCGw5R+dOySCqPLhw==}
     engines: {node: '>=6.9.0'}
+
+  '@circle-fin/adapter-solana@1.6.4':
+    resolution: {integrity: sha512-AIZTWNXvA4Kg6CRbmMQFnSwaoKENZZFWbI6jZgYX5Rmldj4OWpVbcwLHonXHHXEhUXrPGBR99Vj8yBrVPj+7sw==}
+    engines: {node: '>=20.0.0'}
+    peerDependencies:
+      '@solana/web3.js': ^1.98.2
 
   '@circle-fin/adapter-viem-v2@1.14.1':
     resolution: {integrity: sha512-C6MGBO0EP1zlu14B3QD7+ko3Jg0eUTKo0mG3uAJAXE6BXXqRwRgWVNdiwIi0Sr16duOabq5QMmql3T/yNoT99A==}
@@ -1734,6 +1743,27 @@ snapshots:
   '@alloc/quick-lru@5.2.0': {}
 
   '@babel/runtime@7.29.7': {}
+
+  '@circle-fin/adapter-solana@1.6.4(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6))(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)':
+    dependencies:
+      '@coral-xyz/anchor': 0.31.1(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
+      '@ethersproject/abi': 5.8.0
+      '@ethersproject/address': 5.8.0
+      '@ethersproject/bytes': 5.8.0
+      '@ethersproject/units': 5.8.0
+      '@noble/curves': 1.4.2
+      '@solana/web3.js': 1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
+      abitype: 1.2.3(typescript@5.9.3)(zod@3.25.67)
+      bn.js: 5.2.5
+      bs58: 6.0.0
+      buffer: 6.0.3
+      pino: 10.1.0
+      zod: 3.25.67
+    transitivePeerDependencies:
+      - bufferutil
+      - encoding
+      - typescript
+      - utf-8-validate
 
   '@circle-fin/adapter-viem-v2@1.14.1(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)(viem@2.55.10(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)(zod@3.25.67))':
     dependencies:

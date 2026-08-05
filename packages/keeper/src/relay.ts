@@ -34,14 +34,43 @@
 
 import { TransferSpeed } from '@circle-fin/app-kit';
 
-/** Chains this keeper can move USDC between. */
-export type RelayChain = 'arc-testnet' | 'base-sepolia';
+/**
+ * Chains this keeper can move USDC between.
+ *
+ * A list rather than a bare union so a caller — or an operator running
+ * `--help` — can ask what is actually wired, instead of reading it off a type
+ * that vanishes at runtime.
+ */
+export const RELAY_CHAINS = ['arc-testnet', 'base-sepolia', 'solana-devnet'] as const;
+
+export type RelayChain = (typeof RELAY_CHAINS)[number];
 
 /** CCTP domains, verified on-chain rather than taken from docs. */
 export const CCTP_DOMAINS: Record<RelayChain, number> = {
   'arc-testnet': 26,
   'base-sepolia': 6,
+  'solana-devnet': 5,
 };
+
+/**
+ * Which signing scheme a chain uses.
+ *
+ * This is the distinction that cannot be papered over: one keeper key derives
+ * a different account under each scheme, and an EVM adapter cannot sign a
+ * Solana transaction at all. Everything that used to reach for "the adapter"
+ * has to route through this.
+ */
+export type ChainType = 'evm' | 'solana';
+
+const CHAIN_TYPES: Record<RelayChain, ChainType> = {
+  'arc-testnet': 'evm',
+  'base-sepolia': 'evm',
+  'solana-devnet': 'solana',
+};
+
+export function chainTypeOf(chain: RelayChain): ChainType {
+  return CHAIN_TYPES[chain];
+}
 
 /**
  * Circle's attestation service. The sandbox host serves testnets; production

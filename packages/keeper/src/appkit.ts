@@ -20,63 +20,123 @@
  */
 
 import { AppKit, BridgeChain, TransferSpeed } from '@circle-fin/app-kit';
-import { ArcTestnet, BaseSepolia } from '@circle-fin/app-kit/chains';
+import { ArcTestnet, BaseSepolia, SolanaDevnet } from '@circle-fin/app-kit/chains';
 import { createViemAdapterFromPrivateKey } from '@circle-fin/adapter-viem-v2';
+import { createSolanaAdapterFromPrivateKey } from '@circle-fin/adapter-solana';
 
-import type { RelayChain } from './relay.js';
+import { chainTypeOf, type RelayChain } from './relay.js';
 
 /** Our chain names mapped to App Kit's. */
 export const BRIDGE_CHAINS: Record<RelayChain, BridgeChain> = {
   'arc-testnet': BridgeChain.Arc_Testnet,
   'base-sepolia': BridgeChain.Base_Sepolia,
+  'solana-devnet': BridgeChain.Solana_Devnet,
 };
-
-export type KeeperWallet = {
-  kit: AppKit;
-  adapter: ReturnType<typeof createViemAdapterFromPrivateKey>;
-  /**
-   * The signing address on a given chain.
-   *
-   * Async and chain-scoped because that is what the adapter actually offers:
-   * one key can derive different addresses on different chain types, so an
-   * EVM address and a Solana address are not interchangeable. A bare
-   * `address` property reads as correct and silently yields `undefined`.
-   */
-  getAddress: (chain: RelayChain) => Promise<string>;
-};
-
-/**
- * Build a signing keeper from a private key.
- *
- * @param privateKey 32-byte hex. Read it from an encrypted keystore or a
- *        secret manager at call time — never from a file in the repo, and
- *        never log it.
- */
-export function createKeeperWallet(privateKey: string): KeeperWallet {
-  const adapter = createViemAdapterFromPrivateKey({ privateKey });
-  return {
-    kit: new AppKit(),
-    adapter,
-    getAddress: (chain) =>
-      (adapter as unknown as {
-        getAddress: (c: unknown) => Promise<string>;
-      }).getAddress(CHAIN_DEFINITIONS[chain]),
-  };
-}
 
 /** App Kit's own chain definitions, so we never hand-roll chain metadata. */
 const CHAIN_DEFINITIONS: Record<RelayChain, unknown> = {
   'arc-testnet': ArcTestnet,
   'base-sepolia': BaseSepolia,
+  'solana-devnet': SolanaDevnet,
 };
+
+/** Anything App Kit will accept as a signer for one chain type. */
+type Adapter = { getAddress: (chain: unknown) => Promise<string> };
+
+export type KeeperKeys = {
+  /** 32-byte hex, for every EVM chain. */
+  evmPrivateKey: string;
+  /**
+   * Base58, base64 or a JSON byte array — whatever the Solana tooling handed
+   * you. Optional: a keeper that never touches Solana should not be forced to
+   * hold a key for it, and asking for one it does not have fails loudly.
+   */
+  solanaPrivateKey?: string;
+  /**
+   * A pre-built `@solana/web3.js` `Connection`.
+   *
+   * Omit it and the adapter falls back to the chain definition's own
+   * endpoint, which for Solana devnet is the public
+   * `https://api.devnet.solana.com` — fine for a one-off relay, rate-limited
+   * enough to drop transactions under a keeper's polling. Typed loosely so
+   * this package does not take a direct dependency on web3.js just to pass
+   * the object through.
+   */
+  solanaConnection?: unknown;
+};
+
+export type KeeperWallet = {
+  kit: AppKit;
+  /**
+   * The signer for a chain.
+   *
+   * There is no single "the adapter" any more, and that is the point: an EVM
+   * adapter cannot sign a Solana transaction. Passing the wrong one does not
+   * fail at the type level — App Kit takes an adapter and a chain — so it
+   * would surface somewhere inside a bridge, potentially after a burn.
+   */
+  adapterFor: (chain: RelayChain) => Adapter;
+  /**
+   * The signing address on a given chain.
+   *
+   * Async and chain-scoped because that is what the adapter actually offers:
+   * one key derives different addresses on different chain types, so an EVM
+   * address and a Solana address are not interchangeable. A bare `address`
+   * property reads as correct and silently yields `undefined`.
+   */
+  getAddress: (chain: RelayChain) => Promise<string>;
+};
+
+/**
+ * Build a signing keeper from its keys.
+ *
+ * @param keys Read them from an encrypted keystore or a secret manager at call
+ *        time — never from a file in the repo, and never log them.
+ */
+export function createKeeperWallet(keys: KeeperKeys): KeeperWallet {
+  const evm = createViemAdapterFromPrivateKey({
+    privateKey: keys.evmPrivateKey,
+  }) as unknown as Adapter;
+
+  // Built eagerly so a malformed key fails at construction, where it is
+  // cheap, rather than at the first bridge.
+  const solana = keys.solanaPrivateKey
+    ? (createSolanaAdapterFromPrivateKey({
+        privateKey: keys.solanaPrivateKey,
+        ...(keys.solanaConnection ? { connection: keys.solanaConnection as never } : {}),
+      }) as unknown as Adapter)
+    : undefined;
+
+  const adapterFor = (chain: RelayChain): Adapter => {
+    if (chainTypeOf(chain) !== 'solana') return evm;
+    if (!solana) {
+      throw new Error(
+        `${chain} needs a Solana signer, but this keeper was built without solanaPrivateKey — an EVM key cannot sign on Solana`,
+      );
+    }
+    return solana;
+  };
+
+  return {
+    kit: new AppKit(),
+    adapterFor,
+    getAddress: async (chain) => adapterFor(chain).getAddress(CHAIN_DEFINITIONS[chain]),
+  };
+}
 
 export type BridgeRequest = {
   from: RelayChain;
   to: RelayChain;
   /** Human units — "2" means 2 USDC. */
   amount: string;
-  /** Where it lands. Defaults to the keeper's own address. */
-  recipient?: `0x${string}`;
+  /**
+   * Where it lands. Defaults to the keeper's own address on `to`.
+   *
+   * A plain string, because the destination decides the format: hex on an EVM
+   * chain, base58 on Solana. Typing this `0x${string}` did not merely mislabel
+   * a Solana recipient — it made the correct value unexpressible.
+   */
+  recipient?: string;
   /**
    * FAST settles in seconds for a fee; SLOW waits for hard finality, which on
    * Base Sepolia is 13–19 minutes.
@@ -124,14 +184,19 @@ export async function bridgeUsdc(
   wallet: KeeperWallet,
   request: BridgeRequest,
 ): Promise<BridgeOutcome> {
-  const from = { adapter: wallet.adapter, chain: BRIDGE_CHAINS[request.from] };
+  // Each side is signed by that side's adapter. On an Arc ↔ Solana bridge
+  // these are two different keys deriving two different accounts, so reusing
+  // one for both is not a shortcut — it is a bridge built against a signer
+  // that cannot sign.
+  const from = { adapter: wallet.adapterFor(request.from), chain: BRIDGE_CHAINS[request.from] };
+  const toAdapter = wallet.adapterFor(request.to);
   const to = request.recipient
     ? {
-        adapter: wallet.adapter,
+        adapter: toAdapter,
         chain: BRIDGE_CHAINS[request.to],
         recipientAddress: request.recipient,
       }
-    : { adapter: wallet.adapter, chain: BRIDGE_CHAINS[request.to] };
+    : { adapter: toAdapter, chain: BRIDGE_CHAINS[request.to] };
 
   const result = await (wallet.kit as unknown as {
     bridge: (p: unknown) => Promise<{
