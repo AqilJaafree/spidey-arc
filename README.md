@@ -12,9 +12,9 @@ This scores venues with dilution- and cost-aware math, then routes capital only 
 
 | Contract | Address |
 |---|---|
-| `LPVault` | `0xD7abBe6aeEa38D7092388a66870328787540997c` |
-| `ScoreOracle` | `0x8a83C2d96473226Bfdc34433810A326314bf7e2c` |
-| `Router` | `0x415b9bB068eaaF142d4015D0013160d93603221e` |
+| `LPVault` | `0xF54C48505D246a1af07C3a8883232B5170DbBA49` |
+| `ScoreOracle` | `0xFbe3F0746Bd73f4879Eb960cf07d1f50C78067FB` |
+| `Router` | `0xcBDf1E1a8E88f3776653A29c118F38446b37c99E` |
 | USDC (ERC-20 shim) | `0x3600000000000000000000000000000000000000` |
 
 ### Base Sepolia — chain 84532
@@ -32,9 +32,11 @@ This scores venues with dilution- and cost-aware math, then routes capital only 
 |---|---|
 | `MeteoraReceiver` | `FnQGhy6uoFQ3tUuTZ5gwNJhMi1dELcAR7MobwgVLdA4y` |
 
-The Base Sepolia stack is the one to look at — it is fully wired and runs the complete cycle. Arc is the intended hub, but its Router reaches executors with a direct contract call, which cannot cross a chain; see [Known gaps](#known-gaps).
+**Base Sepolia** is the complete stack — fully wired, and it runs the whole cycle including routing into a live Uniswap position.
 
-Arc source verification is submitted for all three; `ScoreOracle` shows verified and the other two are still indexing. Re-run with:
+**Arc** is the intended hub and runs the custody cycle today: deposit, request, settle, claim, all verified on-chain. It deliberately has **no venue registered**, because its Router reaches executors with a direct contract call, which cannot cross a chain, and Arc has no local venue. Registering one anyway would make the vault look configured while `deployIdle` reverts — which is exactly how an earlier Arc deployment came to look operable when it was not. See [Known gaps](#known-gaps).
+
+Arc source verification: `LPVault` and `ScoreOracle` are verified; `Router` is submitted and still indexing. Re-run with:
 
 ```bash
 forge verify-contract <address> src/LPVault.sol:LPVault \
@@ -182,7 +184,7 @@ Also worth stating plainly: **Arc's native gas is 18 decimals, not 6.** Several 
 - **No cross-chain execution.** `Router.rebalance` reaches an executor with a direct contract call, which cannot cross a chain, so the Arc Router can never drive an executor elsewhere. Closing it needs an async executor whose `enter()` initiates a CCTP burn and returns immediately. `IVenueExecutor` declares `isSynchronous()` for exactly this, and the Router never calls it.
 - **Stage 2's Meteora CPI is absent.** Validation, accounting, token custody and retry semantics are complete and tested on devnet — tokens really move. The missing hop is `add_liquidity_by_strategy`.
 - **No automation.** No daemon, no scheduler, no signer, no alerting. Every on-chain action so far was manual.
-- **The Arc deployment is unwired** — zero venues, zero executors. `Deploy.s.sol` does not wire, unlike the Base Sepolia script.
+- **Arc cannot route, only custody.** Deposit and withdrawal work; `deployIdle` reverts because no venue can honestly be registered without a reachable executor. The deploy script now says so on stdout rather than leaving it to be discovered.
 - **Stale NAV defeats the haircut** for unrealized losses. The realized case is fixed (#10); a venue that has lost value the reporter has not marked down still looks solvent.
 - **Meteora has no adapter.** The legacy REST host is retired — Cloudflare 404s every path with `cf-cache-status: HIT`. Real bin data needs on-chain reads.
 - **No `tick-level` fidelity.** Both live venues report `current-tick-liquidity`, exact only within the current tick interval.

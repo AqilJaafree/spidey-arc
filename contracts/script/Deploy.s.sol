@@ -53,6 +53,17 @@ contract Deploy is Script {
 
         vm.stopBroadcast();
 
+        // Deliberately NO venue is registered here.
+        //
+        // A venue with no executor behind it makes the vault look configured
+        // while `deployIdle` reverts `NoExecutor` — the worst of both, and how
+        // the previous Arc deployment ended up appearing operable when it was
+        // not. Arc has no local venue and the cross-chain executor does not
+        // exist yet, so there is nothing honest to register.
+        //
+        // What DOES work on Arc today is the custody cycle: deposit, request,
+        // settle, claim. That needs no venue at all.
+
         console2.log("chainId       ", block.chainid);
         console2.log("deployer      ", deployer);
         console2.log("USDC          ", address(usdc));
@@ -60,6 +71,10 @@ contract Deploy is Script {
         console2.log("ScoreOracle   ", address(oracle));
         console2.log("Router        ", address(router));
         console2.log("");
-        console2.log("Next: registerVenue(...) per venue, then Router.setExecutor(...).");
+        console2.log("WORKS NOW  : deposit / requestWithdraw / settleEpoch / claimWithdraw");
+        console2.log("NOT WIRED  : no venue, no executor -> deployIdle reverts NoExecutor");
+        console2.log("             Arc has no local venue, and the cross-chain executor");
+        console2.log("             does not exist yet. Register a venue only once an");
+        console2.log("             executor can actually be reached.");
     }
 }
