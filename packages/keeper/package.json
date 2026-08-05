@@ -13,6 +13,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@circle-fin/adapter-viem-v2": "^1.14.1",
+    "@circle-fin/app-kit": "^1.11.0",
     "@spidey/adapters": "workspace:*",
     "@spidey/core": "workspace:*",
     "viem": "^2.21.55"

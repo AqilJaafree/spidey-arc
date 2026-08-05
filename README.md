@@ -80,7 +80,7 @@ So adapters report `null` when they cannot measure, every number carries the ran
   packages/core      scoring math + rank(A). Pure — no I/O.
   packages/adapters  Orca, Uniswap v3, Raydium, DefiLlama → NormalizedPool
   packages/api       Hono HTTP surface, TTL-cached
-  packages/keeper    Merkle tree builder + rebalance planner
+  packages/keeper    Merkle tree builder, rebalance planner, CCTP relayer
   apps/web           Next.js comparison UI
   contracts/         LPVault (ERC-4626) + ScoreOracle + Router + UniV3Executor
   solana/            MeteoraReceiver — two-stage CCTP hook (Anchor)
@@ -148,6 +148,21 @@ Capital comes back as a CCTP **mint**, not an executor transfer — so nothing c
 The depositor then exited normally — `requestWithdraw` → `settleEpoch` → `claimWithdraw` — receiving the full 2.00 principal back, and the vault emptied cleanly to `totalAssets = 0, totalSupply = 0`. Capital that crossed two chains and came home is indistinguishable, to a depositor, from capital that never left.
 
 A round trip is four transactions across two chains and two attestations. The relaying is manual here — see [Known gaps](#known-gaps).
+
+### App Kit, and where it belongs
+
+§4 names `@circle-fin/app-kit` as the tool for "Arc ↔ EVM leg movement", and it knows Arc natively — its `ArcTestnet` definition carries chainId 5042002, `testnet.arcscan.app`, and `nativeCurrency.decimals: 18`, independently corroborating the decimal split this repo established by probing the chain.
+
+It is a **TypeScript SDK**, so it runs in a keeper, not in a transaction. `Router.rebalance` decides and moves capital *within one transaction*, and a Solidity contract cannot call a TypeScript SDK. The two are layers, not alternatives:
+
+```
+  on-chain    Router → CctpBridgeExecutor → TokenMessengerV2   the burn
+  off-chain   keeper → App Kit                                 attest + mint
+```
+
+§13 asked whether App Kit's `bridge()` exposes hook data, "or whether the Solana leg must drop to the raw `TokenMessengerV2` interface while EVM legs stay on App Kit". The answer is broader than the question: **every leg the Router drives is raw**, because the Router is a contract. App Kit's job is the half that happens *between* transactions — which is exactly the half that was manual.
+
+`packages/keeper/src/relay.ts` also keeps an independent attestation fetcher alongside App Kit's happy path. A keeper that crashes mid-bridge leaves funds burned and attested but unminted; without a way to fetch and submit an attestation directly, that capital is stranded on a technicality.
 
 **Pick the finality tier deliberately.** `minFinalityThreshold` 2000 (standard) waits for hard finality, which on Base Sepolia is 13–19 minutes; 1000 (fast) settles in seconds for a fee. §7.5's payback rule already prices the wait, so the engine should choose — the contract only bounds the fee.
 
@@ -232,7 +247,7 @@ Also worth stating plainly: **Arc's native gas is 18 decimals, not 6.** Several 
 
 ## Known gaps
 
-- **Nothing relays attestations.** The round trip works but every step was driven by hand: fetch Circle's attestation, submit `receiveMessage`, then `recordBridgeArrival`. That is a keeper daemon's job and it does not exist, so bridged capital sits burned until someone submits it.
+- **No daemon runs the relayer.** `packages/keeper` can fetch attestations, wait for finality and drive App Kit's `bridge()`, and it is tested against the real burns from the round trip — but nothing schedules it. Somebody still has to call it.
 - **No bridge executor on Base.** The return leg was initiated with the owner's `rescueUnaccounted` and a manual `depositForBurn`. Base wants its own `CctpBridgeExecutor` pointed at Arc so the Router drives the return rather than the owner sweeping.
 - **Stage 2's Meteora CPI is absent.** Validation, accounting, token custody and retry semantics are complete and tested on devnet — tokens really move. The missing hop is `add_liquidity_by_strategy`.
 - **No automation.** No daemon, no scheduler, no signer, no alerting. Every on-chain action so far was manual.
