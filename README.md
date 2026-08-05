@@ -135,7 +135,19 @@ Capital comes back as a CCTP **mint**, not an executor transfer — so nothing c
                                books it, clears PENDING_HOOK
 ```
 
-A round trip needs four transactions across two chains and two attestations. The relaying is manual here — see [Known gaps](#known-gaps).
+**Completed on-chain, end to end.** 2 USDC left Arc, minted on Base, burned back, minted home, and was booked:
+
+```
+  deployedAssets  2000000 → 0
+  idle                  0 → 2000000
+  PENDING_HOOK       true → false
+  unaccounted     2000000 → 0
+  coverageBps                10000
+```
+
+The depositor then exited normally — `requestWithdraw` → `settleEpoch` → `claimWithdraw` — receiving the full 2.00 principal back, and the vault emptied cleanly to `totalAssets = 0, totalSupply = 0`. Capital that crossed two chains and came home is indistinguishable, to a depositor, from capital that never left.
+
+A round trip is four transactions across two chains and two attestations. The relaying is manual here — see [Known gaps](#known-gaps).
 
 **Pick the finality tier deliberately.** `minFinalityThreshold` 2000 (standard) waits for hard finality, which on Base Sepolia is 13–19 minutes; 1000 (fast) settles in seconds for a fee. §7.5's payback rule already prices the wait, so the engine should choose — the contract only bounds the fee.
 
@@ -220,8 +232,8 @@ Also worth stating plainly: **Arc's native gas is 18 decimals, not 6.** Several 
 
 ## Known gaps
 
-- **The cross-chain return leg is one-way.** Arc bridges *into* Base over CCTP and the in-flight state is tracked, but coming back must be initiated on Base — nothing on Arc can unwind a position there. A keeper unwinds on Base, bridges back, and records the arrival. Automating that round trip is the remaining work.
-- **Nothing relays the attestation.** The burn emits a CCTP `MessageSent`; minting on Base needs Circle's attestation fetched and submitted. That relayer does not exist here, so bridged capital sits burned until someone submits it.
+- **Nothing relays attestations.** The round trip works but every step was driven by hand: fetch Circle's attestation, submit `receiveMessage`, then `recordBridgeArrival`. That is a keeper daemon's job and it does not exist, so bridged capital sits burned until someone submits it.
+- **No bridge executor on Base.** The return leg was initiated with the owner's `rescueUnaccounted` and a manual `depositForBurn`. Base wants its own `CctpBridgeExecutor` pointed at Arc so the Router drives the return rather than the owner sweeping.
 - **Stage 2's Meteora CPI is absent.** Validation, accounting, token custody and retry semantics are complete and tested on devnet — tokens really move. The missing hop is `add_liquidity_by_strategy`.
 - **No automation.** No daemon, no scheduler, no signer, no alerting. Every on-chain action so far was manual.
 - **Stale NAV defeats the haircut** for unrealized losses. The realized case is fixed (#10); a venue that has lost value the reporter has not marked down still looks solvent.
