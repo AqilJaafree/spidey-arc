@@ -58,7 +58,8 @@ describe('token custody', () => {
 
   it('sets up credit and a program-owned vault account', async () => {
     await program.methods
-      .initCredit(vaultAuthority, pool, destination)
+      // `payer` stands in for the CCTP `MessageTransmitter` PDA here.
+      .initCredit(vaultAuthority, pool, destination, payer.publicKey)
       .accounts({ payer: payer.publicKey, credit, systemProgram: SystemProgram.programId })
       .rpc();
 

@@ -85,7 +85,9 @@ describe('meteora-receiver', () => {
 
   it('creates the credit account before any CCTP message arrives', async () => {
     await program.methods
-      .initCredit(vaultAuthority, pool, destination)
+      // The wallet stands in for the CCTP `MessageTransmitter` PDA, which is
+      // what signs stage 1 in production.
+      .initCredit(vaultAuthority, pool, destination, provider.wallet.publicKey)
       .accounts({
         payer: provider.wallet.publicKey,
         credit,
@@ -147,6 +149,40 @@ describe('meteora-receiver', () => {
 
     const acct = await (program.account as any).credit.fetch(credit);
     assert.equal(acct.amount.toNumber(), 3_500e6, '$1,000 + $2,500');
+  });
+
+  /**
+   * Stage 1 writes the number stage 2 pays out against, and stage 2 is
+   * permissionless. So an unconstrained signer here is not a bookkeeping
+   * nicety: whoever can credit can decide how much of the vault account
+   * moves, and when — without any CCTP message existing.
+   */
+  it('stage 1 refuses a signer that is not the pinned CCTP authority', async () => {
+    const impostor = anchor.web3.Keypair.generate();
+    const sig = await provider.connection.requestAirdrop(impostor.publicKey, 1e9);
+    await provider.connection.confirmTransaction(sig);
+
+    const before = await (program.account as any).credit.fetch(credit);
+
+    try {
+      await program.methods
+        .onCctpReceive({
+          vaultAuthority,
+          pool,
+          amount: USDC(1_000_000),
+          binTolerance: 5,
+          nonce: new anchor.BN(1234),
+        })
+        .accounts({ authority: impostor.publicKey, credit })
+        .signers([impostor])
+        .rpc();
+      assert.fail('an arbitrary signer credited the account');
+    } catch (err: any) {
+      assert.match(String(err), /UnauthorizedReceiveAuthority/);
+    }
+
+    const after = await (program.account as any).credit.fetch(credit);
+    assert.equal(after.amount.toNumber(), before.amount.toNumber(), 'credit untouched');
   });
 
   it('stage 1 is within its 20k CU budget (§9.3)', async () => {

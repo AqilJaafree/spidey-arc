@@ -56,16 +56,22 @@ pub mod meteora_receiver {
     /// allocation can fail (rent, space, a racing initializer), and stage 1
     /// must have no failure modes at all. Pre-creating the account moves that
     /// risk to a transaction whose failure costs nothing.
+    ///
+    /// `cctp_authority` is pinned here for the same reason `destination` is:
+    /// it is the one chance to say who may credit this account, before any
+    /// money is involved.
     pub fn init_credit(
         ctx: Context<InitCredit>,
         vault_authority: Pubkey,
         pool: Pubkey,
         destination: Pubkey,
+        cctp_authority: Pubkey,
     ) -> Result<()> {
         let credit = &mut ctx.accounts.credit;
         credit.vault_authority = vault_authority;
         credit.pool = pool;
         credit.destination = destination;
+        credit.cctp_authority = cctp_authority;
         credit.amount = 0;
         credit.deployed = 0;
         credit.bin_tolerance = 0;
@@ -184,12 +190,53 @@ pub mod meteora_receiver {
     /// retired, or the strategy no longer makes sense. Without it, credited
     /// funds whose destination has become impossible would sit forever, which
     /// is the same failure §10.1 is trying to avoid, one step later.
+    ///
+    /// # This must move tokens, not just the counter
+    ///
+    /// It previously took no token accounts and only decremented
+    /// `credit.amount`, which released nothing. The USDC stays in a
+    /// PDA-owned account whose sole mover is [`deploy_position`], and that is
+    /// gated on `available(amount, deployed)` — so decrementing the counter
+    /// *removed the only instruction able to move the funds* and left them
+    /// exactly where they were. The hatch bricked the door it was there to
+    /// open.
+    ///
+    /// This is also the on-chain half of the return leg. The program has no
+    /// `deposit_for_burn`, so capital cannot go back to Arc from inside it;
+    /// getting the tokens under the vault authority's control is what lets the
+    /// keeper burn them home with App Kit, exactly as the Base Sepolia venue
+    /// does. Until that CPI exists, this is the whole way back.
     pub fn release_credit(ctx: Context<ReleaseCredit>, amount: u64) -> Result<()> {
-        let credit = &mut ctx.accounts.credit;
+        let credit = &ctx.accounts.credit;
         let avail = available(credit.amount, credit.deployed);
         require!(amount > 0, ReceiverError::ZeroAmount);
         require!(amount <= avail, ReceiverError::AmountExceedsCredit);
+        require!(
+            amount <= ctx.accounts.vault_token_account.amount,
+            ReceiverError::AmountExceedsCustody
+        );
 
+        let vault_authority = credit.vault_authority;
+        let pool = credit.pool;
+        let bump = credit.bump;
+        let seeds: &[&[u8]] = &[CREDIT_SEED, vault_authority.as_ref(), pool.as_ref(), &[bump]];
+
+        // Move first, then book. A failed transfer must not leave the counter
+        // claiming the capital was released.
+        token::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.vault_token_account.to_account_info(),
+                    to: ctx.accounts.recipient.to_account_info(),
+                    authority: ctx.accounts.credit.to_account_info(),
+                },
+                &[seeds],
+            ),
+            amount,
+        )?;
+
+        let credit = &mut ctx.accounts.credit;
         credit.amount = credit.amount.saturating_sub(amount);
 
         anchor_lang::solana_program::log::sol_log_data(&[b"release", &amount.to_le_bytes()]);
@@ -224,6 +271,11 @@ pub struct Credit {
     /// Where stage 2 is allowed to send tokens. Pinned at init so a
     /// permissionless caller cannot redirect a credited balance.
     pub destination: Pubkey,
+    /// Who may run stage 1 — the CCTP `MessageTransmitter` PDA in production.
+    /// Pinned at init for the same reason `destination` is: stage 2 is
+    /// permissionless and moves real tokens, so whoever can write
+    /// {@link Credit::amount} can decide how much of the vault account moves.
+    pub cctp_authority: Pubkey,
     pub bump: u8,
 }
 
@@ -273,15 +325,35 @@ pub struct InitCredit<'info> {
 #[derive(Accounts)]
 #[instruction(params: HookParams)]
 pub struct OnCctpReceive<'info> {
-    /// In production this is the CCTP `MessageTransmitter` PDA signing via
-    /// CPI. Kept as a plain signer so the account set stays minimal — stage 1
-    /// touches exactly one writable account.
+    /// The CCTP `MessageTransmitter` PDA, signing via CPI. Checked against
+    /// `credit.cctp_authority` below rather than merely documented: an
+    /// unconstrained `Signer` here means *any* signer can credit *any*
+    /// amount, and since stage 2 is permissionless and pays out to a pinned
+    /// destination, whoever can write `credit.amount` decides how much of the
+    /// vault account moves and when.
     pub authority: Signer<'info>,
 
+    /// The constraint lives here, not on `authority`, because Anchor resolves
+    /// accounts in declaration order and `authority` comes first.
+    ///
+    /// # Why this does not give stage 1 a failure mode
+    ///
+    /// §10.1 requires that stage 1 "cannot revert", because a CCTP v2 hook
+    /// that fails strands an already-burned transfer with no rescue path. A
+    /// check that rejects *the wrong caller* does not violate that: the real
+    /// `MessageTransmitter` always presents the pinned key, so no legitimate
+    /// delivery can fail it. What it rejects was never a burned transfer in
+    /// the first place — it is someone forging a receive.
+    ///
+    /// The rule §10.1 is really stating is that nothing *conditional on the
+    /// world* may run here: no CPI, no clock, no price, no deadline. This is
+    /// a comparison of two keys already in the account set.
     #[account(
         mut,
         seeds = [CREDIT_SEED, params.vault_authority.as_ref(), params.pool.as_ref()],
         bump = credit.bump,
+        constraint = credit.cctp_authority == authority.key()
+            @ ReceiverError::UnauthorizedReceiveAuthority,
     )]
     pub credit: Account<'info, Credit>,
 }
@@ -361,6 +433,31 @@ pub struct ReleaseCredit<'info> {
         has_one = vault_authority,
     )]
     pub credit: Account<'info, Credit>,
+
+    /// The program-owned account the capital is actually sitting in.
+    #[account(
+        mut,
+        seeds = [VAULT_SEED, credit.vault_authority.as_ref(), credit.pool.as_ref()],
+        bump,
+        token::authority = credit,
+    )]
+    pub vault_token_account: Account<'info, TokenAccount>,
+
+    /// Where the released capital lands, on its way back to Arc.
+    ///
+    /// Constrained to an account the vault authority owns. `destination` is
+    /// pinned at init because stage 2 is permissionless; this one is checked
+    /// against the signer instead, since only the vault authority reaches
+    /// here — but it still must not be a free-form address, or "release" would
+    /// be a withdrawal to anywhere the signer likes rather than a return.
+    #[account(
+        mut,
+        constraint = recipient.owner == vault_authority.key()
+            @ ReceiverError::RecipientNotOwnedByVaultAuthority,
+    )]
+    pub recipient: Account<'info, TokenAccount>,
+
+    pub token_program: Program<'info, Token>,
 }
 
 impl From<DeployRejection> for ReceiverError {
@@ -390,4 +487,10 @@ pub enum ReceiverError {
     UnboundedSlippage,
     #[msg("slippage bound exceeds the amount being deployed")]
     ImpossibleSlippageBound,
+    #[msg("only the pinned CCTP authority may credit this account")]
+    UnauthorizedReceiveAuthority,
+    #[msg("released capital must land in an account the vault authority owns")]
+    RecipientNotOwnedByVaultAuthority,
+    #[msg("amount exceeds the tokens actually held by the program")]
+    AmountExceedsCustody,
 }
