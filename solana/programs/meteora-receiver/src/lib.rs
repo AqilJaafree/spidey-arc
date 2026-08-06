@@ -136,6 +136,56 @@ pub mod meteora_receiver {
         Ok(())
     }
 
+    /// Create the DLMM position that stage 2 adds liquidity to, owned by the
+    /// `Credit` PDA.
+    ///
+    /// # Why the program has to create it
+    ///
+    /// The add-liquidity CPI in [`deploy_position`] signs as the `Credit` PDA —
+    /// it must, because the PDA is the authority over the USDC being spent. The
+    /// DLMM program requires that signer to be the position's owner (or
+    /// operator). So the position has to be owned by the `Credit` PDA, and
+    /// `initialize_position` requires the owner to *sign* — which only this
+    /// program can do for a PDA. A keeper-created position would be owned by the
+    /// keeper, and the CPI could never add the vault's USDC to it.
+    ///
+    /// The bin arrays the range needs are NOT created here: `initialize_bin_array`
+    /// is permissionless (any funder), so the keeper makes those directly on the
+    /// DLMM program. Only the position needs the PDA's signature.
+    ///
+    /// `position` is a fresh keypair the caller supplies and signs at the tx
+    /// level; `owner` is the `Credit` PDA, signed here via its seeds.
+    pub fn init_position(ctx: Context<InitPosition>, lower_bin_id: i32, width: i32) -> Result<()> {
+        let credit = &ctx.accounts.credit;
+        let vault_authority = credit.vault_authority;
+        let pool = credit.pool;
+        let bump = credit.bump;
+        let seeds: &[&[u8]] = &[CREDIT_SEED, vault_authority.as_ref(), pool.as_ref(), &[bump]];
+
+        let cpi_accounts = dlmm::cpi::accounts::InitializePosition {
+            payer: ctx.accounts.payer.to_account_info(),
+            position: ctx.accounts.position.to_account_info(),
+            lb_pair: ctx.accounts.lb_pair.to_account_info(),
+            owner: ctx.accounts.credit.to_account_info(),
+            system_program: ctx.accounts.system_program.to_account_info(),
+            rent: ctx.accounts.rent.to_account_info(),
+            event_authority: ctx.accounts.event_authority.to_account_info(),
+            program: ctx.accounts.dlmm_program.to_account_info(),
+        };
+
+        dlmm::cpi::initialize_position(
+            CpiContext::new_with_signer(
+                ctx.accounts.dlmm_program.to_account_info(),
+                cpi_accounts,
+                &[seeds],
+            ),
+            lower_bin_id,
+            width,
+        )?;
+
+        Ok(())
+    }
+
     /// Stage 2 — permissionless and retryable. May fail freely.
     ///
     /// Everything that can go wrong lives here: the active bin may have moved,
@@ -511,6 +561,41 @@ pub struct DeployPosition<'info> {
     pub dlmm_program: UncheckedAccount<'info>,
 
     pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+pub struct InitPosition<'info> {
+    /// Pays the position account's rent, signs the tx.
+    #[account(mut)]
+    pub payer: Signer<'info>,
+
+    /// The credit this position belongs to; signs the CPI as the position owner
+    /// via its seeds.
+    #[account(
+        seeds = [CREDIT_SEED, credit.vault_authority.as_ref(), credit.pool.as_ref()],
+        bump = credit.bump,
+    )]
+    pub credit: Account<'info, Credit>,
+
+    /// CHECK: the fresh position account, a caller-supplied keypair signing at
+    /// the tx level. The DLMM program initializes it.
+    #[account(mut, signer)]
+    pub position: UncheckedAccount<'info>,
+
+    /// CHECK: the pool, pinned to the credit's pool so the position cannot be
+    /// opened against a different one.
+    #[account(address = credit.pool)]
+    pub lb_pair: UncheckedAccount<'info>,
+
+    /// CHECK: the DLMM program's event-authority PDA.
+    pub event_authority: UncheckedAccount<'info>,
+
+    /// CHECK: the DLMM program, pinned to the IDL address.
+    #[account(address = dlmm::ID)]
+    pub dlmm_program: UncheckedAccount<'info>,
+
+    pub system_program: Program<'info, System>,
+    pub rent: Sysvar<'info, Rent>,
 }
 
 #[derive(Accounts)]
