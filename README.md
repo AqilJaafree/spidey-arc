@@ -8,24 +8,29 @@ This scores venues with dilution- and cost-aware math, then routes capital only 
 
 ## Deployed contracts
 
+Deployer `0x9e5fdE1f7484096A9beCDBb956A05834eC581195`, owner/keeper/reporter throughout.
+
 ### Arc testnet — chain 5042002 · [explorer](https://testnet.arcscan.app)
 
 | Contract | Address |
 |---|---|
-| `LPVault` | `0x6501D3c8D48F73905ea8744EB3D11208CaC1B0fb` |
-| `ScoreOracle` | `0x6ca24B702A930f0255817C8063eA0A068a3Bb27C` |
-| `Router` | `0xFC39214E583633a89D3e646abF3fd111C2A08DDA` |
-| `CctpBridgeExecutor` | `0x60DcC29Ae69dc22A4d914194704651E3f75e5537` |
+| `LPVault` | `0x93Cd367f8ABEF789e8F6Bb1ce79eB0AB0153122f` |
+| `ScoreOracle` | `0xb7DB9Ee5Ee46EB608d9a3A4DCc843230dD63b621` |
+| `Router` | `0x09Bb87E6Ca168D6eD85e0682A39b22431600c9A8` |
+| `CctpBridgeExecutor` (venue 2) | `0x9eE4C1FFe609a4848053fD76071abBe69A63DB1c` |
 | USDC (ERC-20 shim) | `0x3600000000000000000000000000000000000000` |
 
 ### Base Sepolia — chain 84532
 
 | Contract | Address |
 |---|---|
-| `LPVault` | `0x44dBDe83F339D23368abce56Cc1ABA2B257f1B0b` |
-| `ScoreOracle` | `0x2d39A8e4C50a2E049C805e99428b11A90106F6e1` |
-| `Router` | `0x82d2BfB316ae89050406c01970dc4e704Def9c5A` |
-| `UniV3Executor` | `0x23300360B14D995eFd8d1072685C4dA39AEf5f81` |
+| `LPVault` | `0x93Cd367f8ABEF789e8F6Bb1ce79eB0AB0153122f` |
+| `ScoreOracle` | `0xb7DB9Ee5Ee46EB608d9a3A4DCc843230dD63b621` |
+| `Router` | `0x09Bb87E6Ca168D6eD85e0682A39b22431600c9A8` |
+| `UniV3Executor` (venue 1) | `0xcFb9E14567F37410857798F983c398612497cDe2` |
+| **`CctpReturnRelay`** | `0x280aD956FFFd3ABba3db59397BE7c4d4d04D32D4` |
+
+The Base `LPVault`/`ScoreOracle`/`Router` share their Arc addresses — deterministic `CREATE` from the same deployer at the same nonces on a fresh account on each chain. They are separate contracts on separate chains.
 
 ### Solana devnet
 
@@ -35,9 +40,9 @@ This scores venues with dilution- and cost-aware math, then routes capital only 
 
 **Base Sepolia** is the complete stack — fully wired, and it runs the whole cycle including routing into a live Uniswap position.
 
-**Arc** is the hub. It runs the custody cycle (deposit, request, settle, claim) and **bridges to Base Sepolia over CCTP v2** — venue 2 is wired to the Base vault above.
+**Arc** is the hub. It runs the custody cycle (deposit, request, settle, claim) and **bridges to Base Sepolia over CCTP v2**. Venue 2's route mints into the **`CctpReturnRelay`**, not the Base vault — so capital Arc sends out lands somewhere whose only exit is back to Arc, under the keeper, with no owner discretion over the destination.
 
-All three Arc contracts are source-verified on the explorer, so the deployed bytecode is reproducible from this repo.
+These contracts are the current bytecode in this repo, including the `NavStale` haircut gate and the `isSynchronous` rebalance guard. They are not yet source-verified on the explorer.
 
 ---
 
@@ -126,28 +131,36 @@ Capital comes back as a CCTP **mint**, not an executor transfer — so nothing c
   deployIdle ──burn──► MessageSent
                           │
                           └──attestation──► receiveMessage ──► USDC mints
+                                                               into the RELAY
                                                                     │
-        MessageSent ◄──burn── depositForBurn ◄──────────────────────┘
-             │
+        MessageSent ◄──burn── relay.returnHome() ◄──────────────────┘
+             │                 keeper-only, destination pinned
              └──attestation──► receiveMessage ──► USDC mints at the vault
                                                        │
                              recordBridgeArrival ◄──────┘
                                books it, clears PENDING_HOOK
 ```
 
-**Completed on-chain, end to end.** 2 USDC left Arc, minted on Base, burned back, minted home, and was booked:
+**Completed on-chain, end to end, through the relay.** 1 USDC left Arc, minted into the `CctpReturnRelay` on Base, was burned home by `returnHome()` — keeper-only, with the destination pinned to Arc, so the owner never touched the money — minted at the Arc vault, and was booked:
 
 ```
-  deployedAssets  2000000 → 0
-  idle                  0 → 2000000
+  venue 2 book    1000000 → 0
+  idle                  0 → 1000000
   PENDING_HOOK       true → false
-  unaccounted     2000000 → 0
   coverageBps                10000
 ```
 
-The depositor then exited normally — `requestWithdraw` → `settleEpoch` → `claimWithdraw` — receiving the full 2.00 principal back, and the vault emptied cleanly to `totalAssets = 0, totalSupply = 0`. Capital that crossed two chains and came home is indistinguishable, to a depositor, from capital that never left.
+The five transactions, 2026-08-06:
 
-A round trip is four transactions across two chains and two attestations. The relaying is manual here — see [Known gaps](#known-gaps).
+| Leg | Chain | Tx |
+|---|---|---|
+| `deployIdle` → burn | Arc | `0x74d5dab5…09b8` |
+| `receiveMessage` → mint to relay | Base | `0x1d844be0…ce99` |
+| `relay.returnHome` → burn home | Base | `0x28dc5510…153d` |
+| `receiveMessage` → mint to vault | Arc | `0x1cd17e83…16f1` |
+| `recordBridgeArrival` → book | Arc | `0xd7d8a7e6…6bfa` |
+
+A round trip is four cross-chain transactions plus a keeper `returnHome`, over two attestations. The relaying is manual here — see [Known gaps](#known-gaps). An earlier round trip (2 USDC, before the relay existed) minted into the Base vault and was brought home by the owner's `rescueUnaccounted` plus a manual bridge; the relay removes that owner step.
 
 ### App Kit, and where it belongs
 
@@ -263,7 +276,7 @@ Also worth stating plainly: **Arc's native gas is 18 decimals, not 6.** Several 
 ## Known gaps
 
 - **No daemon runs the relayer.** `packages/keeper` can fetch attestations, wait for finality and drive App Kit's `bridge()`, and it is tested against the real burns from the round trip — but nothing schedules it. Somebody still has to call it.
-- ~~**No bridge executor on Base.**~~ **Built, not yet deployed.** `CctpReturnRelay` is the Base-side return leg: the owner pins the route to Arc once, the keeper chooses only when and how much, and `sweep` refuses the bridge asset — so USDC that lands there has exactly one exit. It replaces `rescueUnaccounted(to)` under the owner's key, which had two structural problems: `to` was arbitrary, and its `onlyWhenNothingDeployed` guard blocked the hub's capital from coming home whenever the Base stack held a position of its own. Deploy with `script/DeployReturnRelay.s.sol`, then move the Arc-side `setRoute` mintRecipient onto it. The burn is verified against the **real** `TokenMessengerV2` on a Base Sepolia fork — 100 USDC burned toward domain 26, total supply down by exactly that, so the ABI, the `forceApprove` pull and Arc as a destination are all confirmed rather than assumed. What has *not* run is the rest of the round trip: no broadcast, no attestation, no mint on Arc.
+- ~~**No bridge executor on Base.**~~ **Built, deployed, and a full round trip run through it.** `CctpReturnRelay` is the Base-side return leg: the owner pins the route to Arc once, the keeper chooses only when and how much, and `sweep` refuses the bridge asset — so USDC that lands there has exactly one exit. It replaces `rescueUnaccounted(to)` under the owner's key, which had two structural problems: `to` was arbitrary, and its `onlyWhenNothingDeployed` guard blocked the hub's capital from coming home whenever the Base stack held a position of its own. It is deployed on Base Sepolia (`0x280aD9…`), venue 2's Arc-side route points at it, and 1 USDC has made the complete Arc → relay → Arc trip non-custodially (see [the return leg](#the-return-leg)). What is still manual: nothing schedules the keeper's `returnHome` or the two `receiveMessage` calls — the relaying is by hand.
 - **Stage 2's Meteora CPI is absent.** Validation, accounting, token custody and retry semantics are complete and tested on devnet — tokens really move. The missing hop is `add_liquidity_by_strategy`, and the interface for it is now pinned: `solana/idls/lb_clmm.devnet.json` is the IDL fetched from the live devnet program (`LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo`, `lb_clmm` v0.12.0).
 
   <details><summary><code>add_liquidity_by_strategy</code> — 16 accounts, one arg</summary>
@@ -299,17 +312,40 @@ Signing uses an encrypted Foundry keystore, so no private key is read from the e
 
 ```bash
 cd contracts
-cp .env.example .env          # addresses pre-filled and verified
+cp .env.example .env          # RPCs + USDC addresses, pre-filled and verified
 
-cast wallet new ~/.foundry/keystores spidey-deployer
-# fund the printed address: faucet.circle.com → Arc Testnet
-
-forge script script/DeployBaseSepolia.s.sol \
-  --rpc-url https://base-sepolia-rpc.publicnode.com \
-  --account spidey-deployer --broadcast
+cast wallet import spidey-deployer --interactive   # paste key, set a password
+# fund the printed address: faucet.circle.com → Arc Testnet + Base Sepolia,
+# plus a Sepolia ETH faucet for Base gas
 ```
 
-Arc deployment costs ~0.117 USDC; Base Sepolia ~0.000046 ETH; the Solana program 1.354 SOL of rent, recoverable with `solana program close`.
+Deploy the hub, the Base stack, and the return relay. `--sender` must be the
+keystore address, or the script's `msg.sender` defaults to Foundry's and the
+post-deploy `setRouter`/`setCaps` calls revert `NotOwner`:
+
+```bash
+S=--sender\ 0xYourDeployer
+
+# 1. Arc hub
+ARC_RPC_URL=https://rpc.testnet.arc.network \
+USDC_ADDRESS=0x3600000000000000000000000000000000000000 \
+forge script script/Deploy.s.sol --rpc-url arc_testnet --account spidey-deployer $S --broadcast
+
+# 2. Base stack (self-contained, live Uniswap v3 venue)
+forge script script/DeployBaseSepolia.s.sol --rpc-url base_sepolia --account spidey-deployer $S --broadcast
+
+# 3. Return relay on Base, pinned to the Arc vault from step 1
+ARC_VAULT=0x…arc-vault forge script script/DeployReturnRelay.s.sol \
+  --rpc-url base_sepolia --account spidey-deployer $S --broadcast
+
+# 4. Wire venue 2 on Arc, routing at the relay from step 3
+ARC_VAULT=0x…arc-vault ARC_ROUTER=0x…arc-router BASE_RELAY=0x…relay \
+  forge script script/WireBaseVenue.s.sol --rpc-url arc_testnet --account spidey-deployer $S --broadcast
+```
+
+Arc deployment costs ~0.14 USDC; Base Sepolia ~0.00006 ETH; the Solana program 1.354 SOL of rent, recoverable with `solana program close`.
+
+**Moving USDC on Arc needs `cast send`, not `forge script`.** Arc's USDC calls a blocklist *precompile* (`0x18…01`) on every transfer, and that precompile has no EVM bytecode to fork — so any Arc token movement reverts `StackUnderflow` in a local simulation, which is what `forge script` and fork tests run. Deploys and wiring simulate fine (no transfer); the deposit → deploy → burn flow goes through `script/bridge-out-smoke.sh`, and the return leg through `script/return-finish.sh`.
 
 ## API
 
