@@ -159,7 +159,14 @@ contract ShortfallReproTest is Fixtures {
     ///      realized loss can only be written down across many epochs. The
     ///      protection against a compromised reporter is also a delay on
     ///      telling the truth.
-    function test_KNOWN_LIMITATION_staleNavDefeatsTheHaircut() public {
+    /// @dev The shortfall with the loss NOT marked down: $2,000 goes out, only
+    ///      $1,600 comes back, and the missing $400 stays on the book.
+    ///
+    ///      `coverageBps` reads that phantom $400 as an asset, so the vault
+    ///      believes it is whole and applies no haircut — the haircut defeated
+    ///      by a mark nobody refreshed. Alice would be paid in full and bob,
+    ///      owed the same $1,000, would find $600 left.
+    function _shortfallLeftUnmarked() private returns (uint256 aliceId, uint256 bobId) {
         uint256 aliceShares = depositAs(alice, 1_000 * USDC_ONE);
         uint256 bobShares = depositAs(bob, 1_000 * USDC_ONE);
 
@@ -168,9 +175,9 @@ contract ShortfallReproTest is Fixtures {
         router.deployIdle(VENUE_B, 2_000 * USDC_ONE, 900, 5_000, proof, "");
 
         vm.prank(alice);
-        uint256 aliceId = vault.requestWithdraw(aliceShares);
+        aliceId = vault.requestWithdraw(aliceShares);
         vm.prank(bob);
-        uint256 bobId = vault.requestWithdraw(bobShares);
+        bobId = vault.requestWithdraw(bobShares);
 
         // $1,600 returns; the missing $400 is NOT marked down.
         vm.prank(address(executorB));
@@ -180,21 +187,89 @@ contract ShortfallReproTest is Fixtures {
         vm.prank(operator);
         vault.settleEpoch();
 
-        // The vault still counts the lost $400 as deployed, so it believes it
-        // is whole and applies no haircut.
         assertEq(vault.deployedAssets(), 400 * USDC_ONE, "phantom assets on the book");
-        assertEq(vault.coverageBps(), 10_000, "so no haircut is applied");
+        assertEq(vault.coverageBps(), 10_000, "which reads as full coverage");
+    }
+
+    /// @dev The fix: once the mark is older than `MAX_NAV_AGE`, the vault stops
+    ///      treating it as an asset it can pay out of.
+    ///
+    ///      It does not guess a haircut from a number it cannot vouch for —
+    ///      that would confiscate value from depositors whenever the reporter
+    ///      merely went offline. It holds, per §10.2, and says why. Nobody is
+    ///      paid at par out of a balance that may not exist, so ordering stops
+    ///      deciding who eats the loss.
+    function test_staleMarkHoldsTheClaimInsteadOfPayingOutAgainstIt() public {
+        (uint256 aliceId, uint256 bobId) = _shortfallLeftUnmarked();
+
+        (, uint64 markedAt,) = vault.nav();
+        uint64 maxAge = vault.MAX_NAV_AGE();
+        vm.warp(vm.getBlockTimestamp() + maxAge + 1);
+
+        // Read `maxAge` up front: an external call between `vm.prank` and the
+        // call under test consumes the prank, and the claim then reverts
+        // `NotRequestOwner` for the wrong reason entirely.
+        bytes memory stale = abi.encodeWithSelector(LPVault.NavStale.selector, markedAt, maxAge);
 
         vm.prank(alice);
-        assertEq(vault.claimWithdraw(aliceId), 1_000 * USDC_ONE, "alice is paid in full");
+        vm.expectRevert(stale);
+        vault.claimWithdraw(aliceId);
 
-        // And bob cannot be paid at all until the mark catches up.
         vm.prank(bob);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                LPVault.InsufficientIdle.selector, 1_000 * USDC_ONE, 600 * USDC_ONE
-            )
-        );
+        vm.expectRevert(stale);
         vault.claimWithdraw(bobId);
+    }
+
+    /// @dev And the hold is resolvable, not a trap. Writing the residual off —
+    ///      ledger #10's path, `returnToVault(finalize: true)` — removes the
+    ///      unverified balance entirely, and then the haircut does exactly what
+    ///      it was built to do: $1,600 across $2,000 of claims, pro-rata, in
+    ///      whatever order they arrive.
+    function test_writingTheResidualOffLetsTheHaircutShareTheLoss() public {
+        (uint256 aliceId, uint256 bobId) = _shortfallLeftUnmarked();
+        vm.warp(vm.getBlockTimestamp() + vault.MAX_NAV_AGE() + 1);
+
+        vm.prank(address(router));
+        assertEq(vault.recordVenueClosed(VENUE_B), 400 * USDC_ONE, "the phantom is written off");
+
+        // Nothing deployed is left to be unsure about, so age stops mattering.
+        assertEq(vault.deployedAssets(), 0, "no unverified balance remains");
+        assertEq(vault.coverageBps(), 8_000, "coverage is what the vault holds");
+
+        vm.prank(alice);
+        assertEq(vault.claimWithdraw(aliceId), 800 * USDC_ONE, "alice takes her share");
+        vm.prank(bob);
+        assertEq(vault.claimWithdraw(bobId), 800 * USDC_ONE, "and bob takes his");
+    }
+
+    /// @dev The other half of the gate: a mark the reporter is keeping current
+    ///      still backs a payout. The freshness bound must not turn every
+    ///      deployed dollar into an unusable one — that would stall the queue
+    ///      whenever the vault is doing its job.
+    function test_aFreshMarkStillBacksTheClaim() public {
+        uint256 aliceShares = depositAs(alice, 1_000 * USDC_ONE);
+        uint256 bobShares = depositAs(bob, 1_000 * USDC_ONE);
+
+        bytes32[] memory proof = postScores(5_000, 900);
+        vm.prank(keeper);
+        router.deployIdle(VENUE_B, 1_000 * USDC_ONE, 900, 5_000, proof, "");
+
+        vm.prank(alice);
+        uint256 aliceId = vault.requestWithdraw(aliceShares);
+        vm.prank(bob);
+        vault.requestWithdraw(bobShares);
+        vm.prank(operator);
+        vault.settleEpoch();
+
+        // Idle ($1,000) alone does not cover the queue ($2,000), so the answer
+        // depends on the deployed $1,000 — exactly the case the gate governs.
+        // Let the mark go stale, then refresh it at the same value.
+        vm.warp(vm.getBlockTimestamp() + vault.MAX_NAV_AGE() + 1);
+        vm.prank(reporter);
+        vault.reportNav(uint128(1_000 * USDC_ONE));
+
+        assertEq(vault.coverageBps(), 10_000, "fully covered on a current mark");
+        vm.prank(alice);
+        assertEq(vault.claimWithdraw(aliceId), 1_000 * USDC_ONE, "and paid in full");
     }
 }

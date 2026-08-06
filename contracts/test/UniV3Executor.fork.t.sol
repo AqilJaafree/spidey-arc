@@ -67,15 +67,17 @@ contract UniV3ExecutorForkTest is Test {
         vm.stopPrank();
     }
 
+    /// @dev `vm.skip`, not an early `return`. A modifier that returns leaves the
+    ///      test body unexecuted and still reports `[PASS]` — six green lines in
+    ///      936µs for a 426-line contract that ran nothing, which is the README
+    ///      quickstart showing confidence the suite has not earned. `vm.skip`
+    ///      makes forge count it under "skipped" instead.
     modifier onlyForked() {
-        if (!forked) {
-            console2.log("SKIP: set BASE_SEPOLIA_RPC_URL to run the fork test");
-            return;
-        }
+        if (!forked) vm.skip(true, "BASE_SEPOLIA_RPC_URL unset - fork test did not run");
         _;
     }
 
-    function test_fork_environmentIsWhatWeThinkItIs() public view onlyForked {
+    function test_fork_environmentIsWhatWeThinkItIs() public onlyForked {
         assertEq(block.chainid, 84532, "not Base Sepolia");
         assertGt(USDC.code.length, 0, "USDC has no code");
         assertGt(POOL_3000.code.length, 0, "pool has no code");
@@ -84,7 +86,7 @@ contract UniV3ExecutorForkTest is Test {
     }
 
     /// @dev USDC (0x036c...) < WETH (0x4200...), so USDC really is token0.
-    function test_fork_tokenOrdering() public view onlyForked {
+    function test_fork_tokenOrdering() public onlyForked {
         assertTrue(USDC < WETH, "address ordering assumption");
         assertTrue(executor.usdcIsToken0(), "executor must agree with sort order");
     }

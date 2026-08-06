@@ -45,6 +45,7 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
     error VenueCapExceeded(uint16 venueId, uint256 attempted, uint256 cap);
     error NavCooldown(uint64 readyAt);
     error NavDeltaTooLarge(uint256 previous, uint256 proposed, uint16 maxBps);
+    error NavStale(uint64 updatedAt, uint64 maxAge);
     error InsufficientIdle(uint256 requested, uint256 available);
     error VenueInactive(uint16 venueId);
     error VenuePaused(uint16 venueId);
@@ -94,6 +95,20 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
 
     /// @notice Minimum spacing between NAV reports.
     uint64 public constant NAV_COOLDOWN = 1 hours;
+
+    /// @notice How old the mark may be and still back a payout.
+    ///
+    /// @dev Six `NAV_COOLDOWN`s. A reporter on its normal cadence never
+    ///      approaches this, so the bound costs nothing in ordinary operation;
+    ///      it binds only when reporting has actually stopped.
+    ///
+    ///      Wide enough to be honest about what it buys: inside the window an
+    ///      unmarked loss is still paid out at par. It cannot be otherwise —
+    ///      nothing on-chain can tell a venue that lost money from one that did
+    ///      not until somebody says so. What the bound removes is the
+    ///      *indefinite* version, where a mark nobody ever refreshes keeps the
+    ///      vault looking solvent forever.
+    uint64 public constant MAX_NAV_AGE = 6 hours;
 
     uint256 private constant BPS = 10_000;
 
@@ -394,13 +409,20 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
     /// @dev Takes already-loaded state so `claimWithdraw` does not read the
     ///      `assets` slot twice.
     function _coverageBps(Assets memory a) private view returns (uint256) {
-        if (a.pending == 0) return BPS;
         // Fast path: if idle alone covers the queue then adding deployed
         // cannot change the answer, so skip the NAV read entirely. That is
         // the normal case for a settled epoch, and the read is a cold SLOAD
         // on a path that has only ~1.3k of gas headroom against its budget.
+        // (`pending == 0` lands here too: nothing is under `0`.)
         if (a.idle >= a.pending) return BPS;
-        uint256 available = uint256(a.idle) + nav.deployedAssets;
+        return _coverageBps(a, nav.deployedAssets);
+    }
+
+    /// @dev The arithmetic on its own, for callers that have already read the
+    ///      mark — {claimWithdraw} needs the whole `Nav` slot to judge the
+    ///      mark's age, and reading it twice would blow the gas budget.
+    function _coverageBps(Assets memory a, uint256 deployed) private pure returns (uint256) {
+        uint256 available = uint256(a.idle) + deployed;
         if (available >= a.pending) return BPS;
         return (available * BPS) / a.pending;
     }
@@ -621,7 +643,37 @@ contract LPVault is ERC4626, TransientReentrancyGuard {
 
         // Pay a pro-rata share of what the vault can cover. Fully covered is
         // the normal case and leaves this exact.
-        uint256 coverage = _coverageBps(a);
+        //
+        // The mark only enters the answer when idle alone falls short, and
+        // that is the one case where it has to be believed rather than
+        // checked: `nav.deployedAssets` is what a reporter last said, and
+        // `recordDeploy`/`recordReturn` move it as bookkeeping without ever
+        // touching `updatedAt`. So a venue that lost value nobody marked down
+        // reads as full coverage, no haircut applies, and the shortfall lands
+        // on whoever claims last — the ordering unfairness `coverageBps`
+        // exists to remove, reintroduced through an unrefreshed number.
+        //
+        // Hold instead, per §10.2. The alternative — dropping a stale mark and
+        // haircutting against idle alone — would be a guess, and the haircut
+        // is realized here (`pending` drops by the full claim while only
+        // `owed` is paid), so guessing wrong takes value from depositors
+        // permanently every time the reporter merely goes quiet. Refusing to
+        // pay is the reversible failure: `reportNav` clears it, and
+        // `recordVenueClosed` clears it for a loss that is real.
+        uint256 coverage = BPS;
+        if (a.idle < a.pending) {
+            Nav memory n = nav;
+            // Nothing deployed means nothing unverified — age cannot matter,
+            // and blocking here would strand the queue after a full writeoff.
+            if (n.deployedAssets != 0) {
+                uint64 staleAt;
+                unchecked {
+                    staleAt = n.updatedAt + MAX_NAV_AGE;
+                }
+                if (block.timestamp > staleAt) revert NavStale(n.updatedAt, MAX_NAV_AGE);
+            }
+            coverage = _coverageBps(a, n.deployedAssets);
+        }
         owed = coverage == BPS ? p.assets : (uint256(p.assets) * coverage) / BPS;
         if (a.idle < owed) revert InsufficientIdle(owed, a.idle);
 

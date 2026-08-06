@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import {Fixtures, MerkleLib} from "./Fixtures.sol";
+import {Router} from "../src/Router.sol";
 import {CctpBridgeExecutor, ITokenMessengerV2} from "../src/executors/CctpBridgeExecutor.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
@@ -102,11 +103,16 @@ contract CrossChainRebalanceTest is Fixtures {
     /// @dev The scenario in one test: the one position sits on Base Sepolia,
     ///      Solana devnet now scores better, and the keeper tries to move it.
     ///
-    ///      `rebalance` calls `fromExecutor.exit()` unconditionally whenever an
-    ///      executor is set, and a bridge executor's `exit` reverts by design —
-    ///      nothing on Arc can reach into a position on Base and pull it back.
-    ///      So the move is not merely expensive or ill-advised: it cannot be
-    ///      expressed at all.
+    ///      The move is not merely expensive or ill-advised: it cannot be
+    ///      expressed at all. Nothing on Arc can reach into a position on Base
+    ///      and pull it back.
+    ///
+    ///      The Router declines it *itself*, on the executor's own
+    ///      `isSynchronous()` answer, rather than letting the call reach
+    ///      `CctpBridgeExecutor.exit` and surface that contract's
+    ///      `ExitMustBeInitiatedOnDestination`. Same outcome, but the error now
+    ///      names the policy — this venue's capital has to come home first —
+    ///      instead of a mechanism the keeper did not choose to invoke.
     function test_rebalanceBetweenTwoRemoteVenuesCannotExecute() public {
         _openTheOnePosition();
 
@@ -116,9 +122,7 @@ contract CrossChainRebalanceTest is Fixtures {
 
         vm.prank(keeper);
         vm.expectRevert(
-            abi.encodeWithSelector(
-                CctpBridgeExecutor.ExitMustBeInitiatedOnDestination.selector, VENUE_B
-            )
+            abi.encodeWithSelector(Router.RemoteVenueMustReturnFirst.selector, VENUE_B)
         );
         router.rebalance(
             VENUE_B,

@@ -33,6 +33,7 @@ contract Router is TransientReentrancyGuard {
     error CostOutOfBounds(uint256 estCostUsdc, uint256 amount);
     error NoExecutor(uint16 venueId);
     error ScoresStale(uint256 age, uint256 maxAge);
+    error RemoteVenueMustReturnFirst(uint16 venueId);
 
     // -----------------------------------------------------------------------
     // Events
@@ -255,6 +256,22 @@ contract Router is TransientReentrancyGuard {
 
         uint256 recovered = amount;
         if (address(fromExecutor) != address(0)) {
+            // A rebalance is exit-then-enter in one transaction, and an
+            // asynchronous venue cannot do the exit half: nothing here can
+            // reach into a position on another chain and pull it back. The
+            // executor already answers this — `deployIdle` consults
+            // `isSynchronous()` to flag capital in flight — but `rebalance` did
+            // not, so every remote→remote move reached
+            // `CctpBridgeExecutor.exit` and died on its refusal instead.
+            //
+            // Asking here changes which contract says no, and what it says.
+            // `IVenueExecutor.exit` is documented to return what it recovered,
+            // "which may be less than requested for a cross-chain leg still in
+            // flight" — a promise a bridge cannot keep — so a keeper reading
+            // that revert sees an executor breaking its own interface. The
+            // policy is the plainer statement: capital comes home first
+            // (`recordBridgeArrival`), then goes back out (`deployIdle`).
+            if (!fromExecutor.isSynchronous()) revert RemoteVenueMustReturnFirst(fromVenue);
             recovered = fromExecutor.exit(fromVenue, amount, exitData);
         }
 

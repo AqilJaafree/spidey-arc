@@ -263,10 +263,33 @@ Also worth stating plainly: **Arc's native gas is 18 decimals, not 6.** Several 
 ## Known gaps
 
 - **No daemon runs the relayer.** `packages/keeper` can fetch attestations, wait for finality and drive App Kit's `bridge()`, and it is tested against the real burns from the round trip — but nothing schedules it. Somebody still has to call it.
-- **No bridge executor on Base.** The return leg was initiated with the owner's `rescueUnaccounted` and a manual `depositForBurn`. Base wants its own `CctpBridgeExecutor` pointed at Arc so the Router drives the return rather than the owner sweeping.
-- **Stage 2's Meteora CPI is absent.** Validation, accounting, token custody and retry semantics are complete and tested on devnet — tokens really move. The missing hop is `add_liquidity_by_strategy`.
+- ~~**No bridge executor on Base.**~~ **Built, not yet deployed.** `CctpReturnRelay` is the Base-side return leg: the owner pins the route to Arc once, the keeper chooses only when and how much, and `sweep` refuses the bridge asset — so USDC that lands there has exactly one exit. It replaces `rescueUnaccounted(to)` under the owner's key, which had two structural problems: `to` was arbitrary, and its `onlyWhenNothingDeployed` guard blocked the hub's capital from coming home whenever the Base stack held a position of its own. Deploy with `script/DeployReturnRelay.s.sol`, then move the Arc-side `setRoute` mintRecipient onto it. The burn is verified against the **real** `TokenMessengerV2` on a Base Sepolia fork — 100 USDC burned toward domain 26, total supply down by exactly that, so the ABI, the `forceApprove` pull and Arc as a destination are all confirmed rather than assumed. What has *not* run is the rest of the round trip: no broadcast, no attestation, no mint on Arc.
+- **Stage 2's Meteora CPI is absent.** Validation, accounting, token custody and retry semantics are complete and tested on devnet — tokens really move. The missing hop is `add_liquidity_by_strategy`, and the interface for it is now pinned: `solana/idls/lb_clmm.devnet.json` is the IDL fetched from the live devnet program (`LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo`, `lb_clmm` v0.12.0).
+
+  <details><summary><code>add_liquidity_by_strategy</code> — 16 accounts, one arg</summary>
+
+  Discriminator `[7, 3, 150, 127, 148, 40, 61, 200]`.
+
+  | # | Account | |
+  |---|---|---|
+  | 1 | `position` | mut — from `initialize_position(lower_bin_id: i32, width: i32)`, a signer at creation |
+  | 2 | `lb_pair` | mut |
+  | 3 | `bin_array_bitmap_extension` | mut, **optional** |
+  | 4–5 | `user_token_x`, `user_token_y` | mut — the `deploy_position` destination is one of these |
+  | 6–7 | `reserve_x`, `reserve_y` | mut |
+  | 8–9 | `token_x_mint`, `token_y_mint` | |
+  | 10–11 | `bin_array_lower`, `bin_array_upper` | mut — derived from the bin range, not passed by the caller today |
+  | 12 | `sender` | signer — the `Credit` PDA |
+  | 13–14 | `token_x_program`, `token_y_program` | `Tokenkeg…` |
+  | 15–16 | `event_authority`, `program` | |
+
+  `LiquidityParameterByStrategy { amount_x: u64, amount_y: u64, active_id: i32, max_active_bin_slippage: i32, strategy_parameters: StrategyParameters }`, where `StrategyParameters { min_bin_id: i32, max_bin_id: i32, strategy_type: StrategyType, parameteres: [u8; 64] }` — the field really is spelled `parameteres` in the deployed IDL, which matters for anyone hand-encoding. `StrategyType` is one of `Spot`/`Curve`/`BidAsk` × `OneSide`/`Balanced`/`ImBalanced`.
+
+  What this does **not** yet answer: the receiver holds one token (USDC arrives by CCTP), so a balanced strategy needs the Y side sourced or a `*_one_side` variant chosen; and `bin_array_lower`/`bin_array_upper` have to be derived and possibly initialized before the call. Both are design decisions, not lookups.
+
+  </details>
 - **No automation.** No daemon, no scheduler, no signer, no alerting. Every on-chain action so far was manual.
-- **Stale NAV defeats the haircut** for unrealized losses. The realized case is fixed (#10); a venue that has lost value the reporter has not marked down still looks solvent.
+- **Stale NAV defeats the haircut** for unrealized losses, *within a six-hour window*. `claimWithdraw` now reverts `NavStale` rather than paying at par out of a mark older than `MAX_NAV_AGE`, so the defeat is bounded rather than indefinite — but inside the window a venue that has lost value the reporter has not marked down still looks solvent. This also makes `reportNav` a liveness dependency: nothing calls it on a schedule today, and an under-covered vault stops paying claims six hours after its last mark.
 - **Meteora has no adapter.** The legacy REST host is retired — Cloudflare 404s every path with `cf-cache-status: HIT`. Real bin data needs on-chain reads.
 - **No `tick-level` fidelity.** Both live venues report `current-tick-liquidity`, exact only within the current tick interval.
 
