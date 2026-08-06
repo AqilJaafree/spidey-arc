@@ -175,22 +175,22 @@ It is a **TypeScript SDK**, so it runs in a keeper, not in a transaction. `Route
 
 §13 asked whether App Kit's `bridge()` exposes hook data, "or whether the Solana leg must drop to the raw `TokenMessengerV2` interface while EVM legs stay on App Kit". The answer is broader than the question: **every leg the Router drives is raw**, because the Router is a contract. App Kit's job is the half that happens *between* transactions — which is exactly the half that was manual.
 
-`packages/keeper/src/appkit.ts` implements it. One `bridge()` call replaces the four manual steps — burn, poll Iris, `receiveMessage`, repeat in reverse. Run live, Arc → Base Sepolia:
+`packages/keeper/src/appkit.ts` implements it; `packages/keeper/scripts/` holds the runners that drive it live. One `bridge()` call replaces the four manual steps — burn, poll Iris, `receiveMessage`, repeat in reverse. Run live on this deployment, Arc → Base Sepolia, 0.5 USDC:
 
 ```
-  approve            success  0xac56ce0f…
-  burn               success  0xc7329688…
+  approve            success  0x701d8010…
+  burn        (Arc)  success  0xe91519cd…
   fetchAttestation   success
-  mint               success  0xaf551b29…
-
-  17.2 seconds, FAST
+  mint       (Base)  success  0xeb0a6c10…
 ```
 
-Against **15+ minutes** doing it by hand with `SLOW`. Balances confirm both directions: Base 7.69 → 6.69 USDC, Arc 8.49 → 9.48.
+One call, FAST — against the three manual `cast`/`curl` steps *per leg* the round trip above took by hand, and the 15+ minutes `SLOW` costs. Balances moved as expected: Arc 18.82 → 18.32 USDC, Base 0 → 0.50.
 
 `relay.ts` keeps an independent attestation fetcher alongside App Kit's happy path. A keeper that crashes mid-bridge leaves funds burned and attested but unminted; without a way to fetch and submit an attestation directly, that capital is stranded on a technicality.
 
 **App Kit still cannot tell the vault.** Capital returns as a mint, so nothing calls back — `bridgeAndBook` pairs the bridge with `Router.recordBridgeArrival`, and deliberately does not book unless the bridge reports `success`. Booking a pending bridge would credit capital that has not arrived, which is exactly the unbacked-idle case the on-chain bound rejects.
+
+Run live, Base → Arc, 0.5 USDC: burn `0x8b5f0951…`, mint to the vault `0x9c4914e3…`, then `recordBridgeArrival` `0xdfea5029…`. The FAST fee showed up and the bound caught it — 500,000 sent, **499,935** arrived, so the callback booked the vault's actual `unaccountedBalance()`, not the nominal amount. Booking the nominal 500,000 would have reverted `NoSuchArrival(500000, 499935)`. Vault idle 1.000000 → 1.499935.
 
 **Pick the finality tier deliberately.** `minFinalityThreshold` 2000 (standard) waits for hard finality, which on Base Sepolia is 13–19 minutes; 1000 (fast) settles in seconds for a fee. §7.5's payback rule already prices the wait, so the engine should choose — the contract only bounds the fee.
 
