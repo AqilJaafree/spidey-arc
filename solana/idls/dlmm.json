@@ -1,0 +1,239 @@
+{
+  "address": "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
+  "metadata": {
+    "description": "Created with Anchor",
+    "name": "lb_clmm",
+    "spec": "0.1.0",
+    "version": "0.12.0"
+  },
+  "instructions": [
+    {
+      "accounts": [
+        {
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "lb_pair",
+          "relations": [
+            "position",
+            "bin_array_bitmap_extension",
+            "bin_array_lower",
+            "bin_array_upper"
+          ],
+          "writable": true
+        },
+        {
+          "name": "bin_array_bitmap_extension",
+          "optional": true,
+          "writable": true
+        },
+        {
+          "name": "user_token",
+          "writable": true
+        },
+        {
+          "name": "reserve",
+          "writable": true
+        },
+        {
+          "name": "token_mint"
+        },
+        {
+          "name": "bin_array_lower",
+          "writable": true
+        },
+        {
+          "name": "bin_array_upper",
+          "writable": true
+        },
+        {
+          "name": "sender",
+          "signer": true
+        },
+        {
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "name": "token_program"
+        },
+        {
+          "name": "event_authority",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  95,
+                  95,
+                  101,
+                  118,
+                  101,
+                  110,
+                  116,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": [
+        {
+          "name": "liquidity_parameter",
+          "type": {
+            "defined": {
+              "name": "LiquidityParameterByStrategyOneSide"
+            }
+          }
+        }
+      ],
+      "discriminator": [
+        41,
+        5,
+        238,
+        175,
+        100,
+        225,
+        6,
+        205
+      ],
+      "name": "add_liquidity_by_strategy_one_side"
+    }
+  ],
+  "accounts": [],
+  "events": [],
+  "errors": [],
+  "types": [
+    {
+      "name": "LiquidityParameterByStrategyOneSide",
+      "type": {
+        "fields": [
+          {
+            "docs": [
+              "Amount of X token or Y token to deposit"
+            ],
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "docs": [
+              "Active bin that integrator observe off-chain"
+            ],
+            "name": "active_id",
+            "type": "i32"
+          },
+          {
+            "docs": [
+              "max active bin slippage allowed"
+            ],
+            "name": "max_active_bin_slippage",
+            "type": "i32"
+          },
+          {
+            "docs": [
+              "strategy parameters"
+            ],
+            "name": "strategy_parameters",
+            "type": {
+              "defined": {
+                "name": "StrategyParameters"
+              }
+            }
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "StrategyParameters",
+      "type": {
+        "fields": [
+          {
+            "docs": [
+              "min bin id"
+            ],
+            "name": "min_bin_id",
+            "type": "i32"
+          },
+          {
+            "docs": [
+              "max bin id"
+            ],
+            "name": "max_bin_id",
+            "type": "i32"
+          },
+          {
+            "docs": [
+              "strategy type"
+            ],
+            "name": "strategy_type",
+            "type": {
+              "defined": {
+                "name": "StrategyType"
+              }
+            }
+          },
+          {
+            "docs": [
+              "parameters"
+            ],
+            "name": "parameteres",
+            "type": {
+              "array": [
+                "u8",
+                64
+              ]
+            }
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "StrategyType",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "SpotOneSide"
+          },
+          {
+            "name": "CurveOneSide"
+          },
+          {
+            "name": "BidAskOneSide"
+          },
+          {
+            "name": "SpotBalanced"
+          },
+          {
+            "name": "CurveBalanced"
+          },
+          {
+            "name": "BidAskBalanced"
+          },
+          {
+            "name": "SpotImBalanced"
+          },
+          {
+            "name": "CurveImBalanced"
+          },
+          {
+            "name": "BidAskImBalanced"
+          }
+        ]
+      }
+    }
+  ]
+}

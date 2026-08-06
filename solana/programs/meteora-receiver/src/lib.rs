@@ -33,6 +33,24 @@ use rules::{available, check_deploy, credit_after_receive, DeployRejection};
 
 declare_id!("FnQGhy6uoFQ3tUuTZ5gwNJhMi1dELcAR7MobwgVLdA4y");
 
+// Meteora DLMM (`lb_clmm`), for the stage-2 CPI. `declare_program!(dlmm)` reads
+// `idls/dlmm.json` and generates typed CPI bindings: `dlmm::ID`, `dlmm::cpi::*`,
+// `dlmm::cpi::accounts::*`, `dlmm::types::*`. This is Meteora's own integration
+// pattern (see MeteoraAg/cpi-examples), not hand-rolled discriminators.
+//
+// `idls/dlmm.json` is a deliberately MINIMAL slice of the live IDL — the one
+// instruction we call (`add_liquidity_by_strategy_one_side`) and the three
+// types it needs. The full devnet IDL is kept alongside as
+// `idls/lb_clmm.devnet.json` for reference. The macro must be trimmed because
+// it generates a zero-copy `Pod` struct for every entry in the IDL's
+// `accounts`, and several DLMM state accounts (`PresetParameter2`, `TokenBadge`
+// …) do not satisfy `AnyBitPattern` — 41 compile errors we do not need, since a
+// CPI never deserializes those accounts.
+//
+// The program ID is the same across clusters (`LBUZ…Pwxo`), so this serves
+// devnet and mainnet — which is what "one-sided USDC on every chain" needs.
+declare_program!(dlmm);
+
 /// Seed for the per-(vault authority, pool) credit account.
 pub const CREDIT_SEED: &[u8] = b"credit";
 
@@ -144,32 +162,77 @@ pub mod meteora_receiver {
         )
         .map_err(ReceiverError::from)?;
 
-        // Move the tokens. Until this existed the program was pure
-        // bookkeeping — it tracked amounts and never held or moved a single
-        // token, so a CCTP mint into its vault would have sat there while
-        // `deployed` climbed. Accounting that cannot be settled is worse than
-        // no accounting.
+        // The stage-2 hop that was missing: add USDC to a Meteora DLMM position
+        // via CPI, drawing from the program-owned `vault_token_account`.
         //
-        // The destination is the position-owner account the caller supplies;
-        // the Meteora `add_liquidity_by_strategy` CPI then draws from there.
-        // That last hop is still absent — see README "Known gaps" — but the
-        // custody half is now real and testable.
+        // ONE-SIDED, always. This receiver holds a single token (USDC arrives
+        // by CCTP), and the strategy is the same on every chain — deposit that
+        // one token on one side of the active bin. So this is
+        // `add_liquidity_by_strategy_one_side`, whose account set is a single
+        // token side (no dummy Y-side reserve/mint/account to fabricate). The
+        // `Credit` PDA is the `sender` and already owns `vault_token_account`,
+        // so the same seeds that authorized the old transfer authorize the CPI.
+        //
+        // §9.2 division of labor holds: the keeper computes the bin range, the
+        // active id and the derived bin-array PDAs off-chain and passes them
+        // in; `check_deploy` above verified the active bin sits within the
+        // tolerance the receive pinned. The program does not recompute the
+        // strategy — it bounds it.
         let vault_authority = credit.vault_authority;
         let pool = credit.pool;
         let bump = credit.bump;
         let seeds: &[&[u8]] = &[CREDIT_SEED, vault_authority.as_ref(), pool.as_ref(), &[bump]];
 
-        token::transfer(
+        // For a one-sided deposit only the *-OneSide strategies are coherent;
+        // the balanced variants assume two tokens. The keeper picks which via
+        // the SDK; the program only rejects a value it cannot map.
+        let strategy_type = match args.strategy_type {
+            0 => dlmm::types::StrategyType::SpotOneSide,
+            1 => dlmm::types::StrategyType::CurveOneSide,
+            2 => dlmm::types::StrategyType::BidAskOneSide,
+            _ => return err!(ReceiverError::UnknownStrategyType),
+        };
+
+        let liquidity_parameter = dlmm::types::LiquidityParameterByStrategyOneSide {
+            amount: args.amount,
+            active_id: args.active_bin_id,
+            max_active_bin_slippage: args.max_active_bin_slippage,
+            strategy_parameters: dlmm::types::StrategyParameters {
+                min_bin_id: args.min_bin_id,
+                max_bin_id: args.max_bin_id,
+                strategy_type,
+                // Opaque per-strategy bytes; unused by the strategy types above,
+                // which derive their distribution from the bin range.
+                parameteres: [0u8; 64],
+            },
+        };
+
+        let cpi_accounts = dlmm::cpi::accounts::AddLiquidityByStrategyOneSide {
+            position: ctx.accounts.position.to_account_info(),
+            lb_pair: ctx.accounts.lb_pair.to_account_info(),
+            bin_array_bitmap_extension: ctx
+                .accounts
+                .bin_array_bitmap_extension
+                .as_ref()
+                .map(|a| a.to_account_info()),
+            user_token: ctx.accounts.vault_token_account.to_account_info(),
+            reserve: ctx.accounts.reserve.to_account_info(),
+            token_mint: ctx.accounts.token_mint.to_account_info(),
+            bin_array_lower: ctx.accounts.bin_array_lower.to_account_info(),
+            bin_array_upper: ctx.accounts.bin_array_upper.to_account_info(),
+            sender: ctx.accounts.credit.to_account_info(),
+            token_program: ctx.accounts.token_program.to_account_info(),
+            event_authority: ctx.accounts.event_authority.to_account_info(),
+            program: ctx.accounts.dlmm_program.to_account_info(),
+        };
+
+        dlmm::cpi::add_liquidity_by_strategy_one_side(
             CpiContext::new_with_signer(
-                ctx.accounts.token_program.to_account_info(),
-                Transfer {
-                    from: ctx.accounts.vault_token_account.to_account_info(),
-                    to: ctx.accounts.destination.to_account_info(),
-                    authority: ctx.accounts.credit.to_account_info(),
-                },
+                ctx.accounts.dlmm_program.to_account_info(),
+                cpi_accounts,
                 &[seeds],
             ),
-            args.amount,
+            liquidity_parameter,
         )?;
 
         let credit = &mut ctx.accounts.credit;
@@ -294,10 +357,23 @@ pub struct DeployArgs {
     pub amount: u64,
     /// Bin the engine aimed at when it built this instruction.
     pub target_bin_id: i32,
-    /// Bin the pool is actually on now, read by the caller.
+    /// Bin the pool is actually on now, read by the caller. Also the DLMM
+    /// `active_id` the CPI is bounded against.
     pub active_bin_id: i32,
     /// Slippage floor. Zero is rejected.
     pub min_amount_out: u64,
+    /// One-sided range for the DLMM strategy, computed off-chain. `check_deploy`
+    /// bounds `active_bin_id` against the receive tolerance; the DLMM program
+    /// bounds these against the pool.
+    pub min_bin_id: i32,
+    pub max_bin_id: i32,
+    /// How far the active bin may drift between build and land before the DLMM
+    /// program rejects the add — the CPI's own slippage guard, in bins.
+    pub max_active_bin_slippage: i32,
+    /// 0 = SpotOneSide, 1 = CurveOneSide, 2 = BidAskOneSide. Any other value is
+    /// rejected — the balanced strategies assume two tokens this receiver never
+    /// has.
+    pub strategy_type: u8,
 }
 
 // ---------------------------------------------------------------------------
@@ -373,7 +449,8 @@ pub struct DeployPosition<'info> {
     pub credit: Account<'info, Credit>,
 
     /// The program-owned USDC account CCTP mints into. Its authority is the
-    /// `credit` PDA, so only this program can move the funds.
+    /// `credit` PDA, so only this program can move the funds — and it is the
+    /// `user_token` the DLMM CPI draws from.
     #[account(
         mut,
         seeds = [VAULT_SEED, credit.vault_authority.as_ref(), credit.pool.as_ref()],
@@ -382,13 +459,56 @@ pub struct DeployPosition<'info> {
     )]
     pub vault_token_account: Account<'info, TokenAccount>,
 
-    /// Where the tokens go on their way into the position.
-    ///
-    /// Pinned to the destination recorded at receive time, so a permissionless
-    /// caller cannot redirect funds. Without this constraint "anyone may call
-    /// stage 2" would mean "anyone may drain the credit".
-    #[account(mut, address = credit.destination)]
-    pub destination: Account<'info, TokenAccount>,
+    // --- Meteora DLMM accounts for `add_liquidity_by_strategy_one_side` -------
+    //
+    // Unchecked because they are validated by the DLMM program on the CPI, not
+    // here (§9.2: pass computed values in, verify cheaply). The one constraint
+    // that matters for safety is that the pool is the one this credit was
+    // opened against — `lb_pair == credit.pool` — so a permissionless caller
+    // cannot redirect the credited USDC into a pool of their choosing. Every
+    // other account keys off `lb_pair`, so pinning it pins the rest.
+    //
+    // `position` and the bin arrays are keeper prerequisites: the position is
+    // created with `initialize_position(lower_bin_id, width)` and each bin
+    // array with `initialize_bin_array(index)`, where
+    // `index = floor(bin_id / 70)`, before this runs. Making the program own
+    // the position (so it can later *remove* liquidity for the return leg) is a
+    // follow-up — today the keeper owns it, and the return leg still goes
+    // through `release_credit`.
+
+    /// CHECK: the DLMM position; validated by the DLMM program.
+    #[account(mut)]
+    pub position: UncheckedAccount<'info>,
+
+    /// CHECK: the pool. Pinned to the credit's pool so funds cannot be diverted.
+    #[account(mut, address = credit.pool)]
+    pub lb_pair: UncheckedAccount<'info>,
+
+    /// CHECK: optional bin-array bitmap extension; validated by the DLMM program.
+    #[account(mut)]
+    pub bin_array_bitmap_extension: Option<UncheckedAccount<'info>>,
+
+    /// CHECK: the pool reserve for the USDC side; validated by the DLMM program.
+    #[account(mut)]
+    pub reserve: UncheckedAccount<'info>,
+
+    /// CHECK: USDC mint; validated by the DLMM program against the pool.
+    pub token_mint: UncheckedAccount<'info>,
+
+    /// CHECK: lower bin array (`floor(min_bin_id / 70)`); validated on the CPI.
+    #[account(mut)]
+    pub bin_array_lower: UncheckedAccount<'info>,
+
+    /// CHECK: upper bin array (`floor(max_bin_id / 70)`); validated on the CPI.
+    #[account(mut)]
+    pub bin_array_upper: UncheckedAccount<'info>,
+
+    /// CHECK: the DLMM program's event-authority PDA, for its event CPI.
+    pub event_authority: UncheckedAccount<'info>,
+
+    /// CHECK: the DLMM program itself, pinned to the address the IDL carries.
+    #[account(address = dlmm::ID)]
+    pub dlmm_program: UncheckedAccount<'info>,
 
     pub token_program: Program<'info, Token>,
 }
@@ -493,4 +613,6 @@ pub enum ReceiverError {
     RecipientNotOwnedByVaultAuthority,
     #[msg("amount exceeds the tokens actually held by the program")]
     AmountExceedsCustody,
+    #[msg("strategy_type must be 0/1/2 (Spot/Curve/BidAsk OneSide)")]
+    UnknownStrategyType,
 }

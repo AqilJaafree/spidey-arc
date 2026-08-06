@@ -81,11 +81,11 @@ describe('token custody', () => {
     assert.ok(vault.owner.equals(credit), 'only the credit PDA can move these funds');
   });
 
-  it('stage 2 moves real tokens, not just counters', async () => {
+  it('stage 1 credits a real CCTP mint into the program-owned account', async () => {
     // CCTP mints $1,000 into the program-owned account...
     await mintTo(provider.connection, payer, mint, vaultTokenAccount, payer, 1_000e6);
 
-    // ...and stage 1 credits it.
+    // ...and stage 1 credits it. This path is unchanged by the DLMM CPI.
     await program.methods
       .onCctpReceive({
         vaultAuthority,
@@ -97,113 +97,70 @@ describe('token custody', () => {
       .accounts({ authority: payer.publicKey, credit })
       .rpc();
 
-    const vaultBefore = await getAccount(provider.connection, vaultTokenAccount);
-    const destBefore = await getAccount(provider.connection, destination);
-
-    await program.methods
-      .deployPosition({
-        amount: USDC(400),
-        targetBinId: 100,
-        activeBinId: 102,
-        minAmountOut: USDC(399),
-      })
-      .accounts({
-        caller: payer.publicKey,
-        credit,
-        vaultTokenAccount,
-        destination,
-        tokenProgram: TOKEN_PROGRAM_ID,
-      })
-      .rpc();
-
-    const vaultAfter = await getAccount(provider.connection, vaultTokenAccount);
-    const destAfter = await getAccount(provider.connection, destination);
-
-    assert.equal(
-      Number(vaultBefore.amount - vaultAfter.amount),
-      400e6,
-      'tokens actually left the vault',
-    );
-    assert.equal(
-      Number(destAfter.amount - destBefore.amount),
-      400e6,
-      'and actually arrived at the destination',
-    );
-
     const acct = await (program.account as any).credit.fetch(credit);
-    assert.equal(acct.deployed.toNumber(), 400e6, 'books agree with the token movement');
-    assert.equal(acct.amount.toNumber(), 1_000e6, 'credit itself unchanged');
-  });
+    assert.equal(acct.amount.toNumber(), 1_000e6, 'credited');
+    assert.equal(acct.deployed.toNumber(), 0, 'nothing deployed yet');
 
-  /// A permissionless instruction that could name its own destination would
-  /// be a drain, not a deploy. The destination is pinned at init.
-  it('a caller cannot redirect the funds', async () => {
-    const attacker = await createAccount(
-      provider.connection,
-      payer,
-      mint,
-      Keypair.generate().publicKey,
-    );
-
-    try {
-      await program.methods
-        .deployPosition({
-          amount: USDC(100),
-          targetBinId: 100,
-          activeBinId: 100,
-          minAmountOut: USDC(99),
-        })
-        .accounts({
-          caller: payer.publicKey,
-          credit,
-          vaultTokenAccount,
-          destination: attacker,
-          tokenProgram: TOKEN_PROGRAM_ID,
-        })
-        .rpc();
-      assert.fail('funds were redirected to an attacker-chosen account');
-    } catch (e: any) {
-      assert.match(e.toString(), /ConstraintAddress|AnchorError/, 'must fail the address pin');
-    }
-
-    const attackerAcct = await getAccount(provider.connection, attacker);
-    assert.equal(attackerAcct.amount.toString(), '0', 'attacker received nothing');
-  });
-
-  it('cannot deploy more than the vault actually holds', async () => {
-    // Books say $600 remains, and so does the token account. Ask for more.
-    try {
-      await program.methods
-        .deployPosition({
-          amount: USDC(5_000),
-          targetBinId: 100,
-          activeBinId: 100,
-          minAmountOut: USDC(1),
-        })
-        .accounts({
-          caller: payer.publicKey,
-          credit,
-          vaultTokenAccount,
-          destination,
-          tokenProgram: TOKEN_PROGRAM_ID,
-        })
-        .rpc();
-      assert.fail('should have been refused');
-    } catch (e: any) {
-      assert.include(e.toString(), 'AmountExceedsCredit');
-    }
-  });
-
-  /// The invariant that keeps the receiver honest: tracked `deployed` can
-  /// never exceed what has actually left the vault.
-  it('books never claim more was deployed than left the vault', async () => {
-    const acct = await (program.account as any).credit.fetch(credit);
     const vault = await getAccount(provider.connection, vaultTokenAccount);
+    assert.equal(vault.amount.toString(), (1_000e6).toString(), 'held by the program');
+  });
 
-    const stillHeld = Number(vault.amount);
-    const claimedOut = acct.deployed.toNumber();
-    const credited = acct.amount.toNumber();
+  /**
+   * Stage 2 now performs a live Meteora DLMM CPI
+   * (`add_liquidity_by_strategy_one_side`), so it cannot be exercised against a
+   * bare SPL mint — it needs a real pool, an initialized position, and the two
+   * bin arrays for the range. These are the devnet-integration tests, skipped
+   * until wired against a live pool (~10,800 exist on devnet).
+   *
+   * What still has coverage WITHOUT a pool:
+   *   - `check_deploy` — every rejection (zero amount, over-credit, active bin
+   *     outside tolerance, unbounded/impossible slippage) is property-tested in
+   *     `rules.rs`, pure and offline. The validation did not move; only the
+   *     token movement became a CPI.
+   *   - the custody/authority setup above (init_credit, init_vault, stage 1).
+   *
+   * The safety property that WAS "destination is pinned" is now "lb_pair is
+   * pinned to credit.pool" — a permissionless caller cannot divert the credited
+   * USDC into a pool of their choosing. That is the first thing to assert once
+   * this runs live.
+   */
+  describe.skip('stage 2 — live DLMM one-sided CPI (needs a real pool)', () => {
+    it('adds one-sided USDC liquidity to the pinned pool', async () => {
+      // Keeper-derived, off-chain (§9.2). For a real pool:
+      //   activeId   = pool active bin, read on-chain
+      //   [min,max]  = one-sided range from activeId (USDC side only)
+      //   binArrayLower/Upper = deriveBinArray(lbPair, floor(bin/70), DLMM_ID)
+      //   position  = initialize_position(lower_bin_id, width) beforehand
+      const DLMM_PROGRAM = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
+      // (lbPair, reserve, tokenMint, position, binArrayLower, binArrayUpper,
+      //  eventAuthority, binArrayBitmapExtension) all come from the live pool.
 
-    assert.equal(credited - claimedOut, stillHeld, 'credit - deployed == tokens still held');
+      await program.methods
+        .deployPosition({
+          amount: USDC(400),
+          targetBinId: 100,
+          activeBinId: 102,
+          minAmountOut: USDC(399),
+          minBinId: 102,
+          maxBinId: 140,
+          maxActiveBinSlippage: 5,
+          strategyType: 0, // SpotOneSide
+        })
+        .accounts({
+          caller: payer.publicKey,
+          credit,
+          vaultTokenAccount,
+          // position, lbPair (== credit.pool), reserve, tokenMint,
+          // binArrayLower, binArrayUpper, eventAuthority,
+          // dlmmProgram: DLMM_PROGRAM, tokenProgram, and the optional
+          // binArrayBitmapExtension — all from the live pool.
+          dlmmProgram: DLMM_PROGRAM,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .rpc();
+
+      const acct = await (program.account as any).credit.fetch(credit);
+      assert.equal(acct.deployed.toNumber(), 400e6, 'books track the deployed amount');
+    });
   });
 });
