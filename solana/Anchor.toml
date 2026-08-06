@@ -6,7 +6,7 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-meteora_receiver = "FnQGhy6uoFQ3tUuTZ5gwNJhMi1dELcAR7MobwgVLdA4y"
+meteora_receiver = "FLfdxZbnkMFCRAgGDTkMzZn3i2X2EKZhYBep6seHjqNp"
 
 [registry]
 url = "https://api.apr.dev"

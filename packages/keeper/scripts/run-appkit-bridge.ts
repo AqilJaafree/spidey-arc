@@ -20,12 +20,20 @@ import type { RelayChain } from '../src/relay.js';
 const evmPrivateKey = process.env.EVM_PRIVATE_KEY;
 if (!evmPrivateKey) throw new Error('set EVM_PRIVATE_KEY (0x-prefixed)');
 
+// Needed only when a leg is on Solana. A JSON byte array (id.json), base58, or
+// base64 — whatever the Solana tooling handed you. The adapter builds eagerly,
+// so a bad key fails here, not mid-bridge.
+const solanaPrivateKey = process.env.SOLANA_PRIVATE_KEY;
+
 const from = (process.env.FROM ?? 'arc-testnet') as RelayChain;
 const to = (process.env.TO ?? 'base-sepolia') as RelayChain;
 const amount = process.env.AMOUNT ?? '0.5';
 const recipient = process.env.RECIPIENT; // default: keeper's own address on `to`
 
-const wallet = createKeeperWallet({ evmPrivateKey });
+const wallet = createKeeperWallet({
+  evmPrivateKey,
+  ...(solanaPrivateKey ? { solanaPrivateKey } : {}),
+});
 
 const fromAddr = await wallet.getAddress(from);
 const toAddr = await wallet.getAddress(to);

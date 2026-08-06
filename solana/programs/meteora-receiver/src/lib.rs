@@ -31,7 +31,7 @@ use anchor_spl::token::{self, Token, TokenAccount, Transfer};
 pub mod rules;
 use rules::{available, check_deploy, credit_after_receive, DeployRejection};
 
-declare_id!("FnQGhy6uoFQ3tUuTZ5gwNJhMi1dELcAR7MobwgVLdA4y");
+declare_id!("FLfdxZbnkMFCRAgGDTkMzZn3i2X2EKZhYBep6seHjqNp");
 
 // Meteora DLMM (`lb_clmm`), for the stage-2 CPI. `declare_program!(dlmm)` reads
 // `idls/dlmm.json` and generates typed CPI bindings: `dlmm::ID`, `dlmm::cpi::*`,
