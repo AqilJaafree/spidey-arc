@@ -30,7 +30,7 @@ use anchor_spl::token::{self, Token, TokenAccount, Transfer};
 
 pub mod rules;
 use rules::{
-    available, check_deploy, credit_after_receive, position_range, resolve_sides, DeployRejection,
+    available, check_deploy, credit_after_receive, custody_side, position_range, DeployRejection,
     Side, WithdrawRejection,
 };
 
@@ -762,7 +762,8 @@ impl From<WithdrawRejection> for ReceiverError {
             WithdrawRejection::PoolDoesNotHoldCustodyMint => {
                 ReceiverError::PoolDoesNotHoldCustodyMint
             }
-            WithdrawRejection::InvalidPositionRange => ReceiverError::InvalidPositionRange,
+            WithdrawRejection::NonPositiveWidth => ReceiverError::NonPositiveWidth,
+            WithdrawRejection::PositionRangeOutOfBounds => ReceiverError::PositionRangeOutOfBounds,
         }
     }
 }
@@ -793,6 +794,8 @@ pub enum ReceiverError {
     PositionAlreadyAdopted,
     #[msg("the pool does not hold the mint this program has custody of")]
     PoolDoesNotHoldCustodyMint,
-    #[msg("the recorded position range is empty or outside i32")]
-    InvalidPositionRange,
+    #[msg("position width must be positive")]
+    NonPositiveWidth,
+    #[msg("the recorded position range extends past i32")]
+    PositionRangeOutOfBounds,
 }
