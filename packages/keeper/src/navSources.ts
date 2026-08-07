@@ -86,3 +86,27 @@ export async function readRelayBalance(
     args: [relay],
   }) as Promise<bigint>;
 }
+
+/** A burn seen on the source chain, awaiting mint on the destination. */
+export type Burn = { nonce: string; amount: bigint };
+
+/**
+ * Capital that has left Arc and not yet arrived on Base.
+ *
+ * Counted at full value. CCTP attestation guarantees the mint will complete,
+ * so haircutting depositors for a normal bridge delay would be marking a loss
+ * that is not happening — and the window is minutes, comfortably inside the
+ * six-hour deadline the reporter exists to beat.
+ *
+ * `isMinted` is injected rather than called directly so the counting rule can
+ * be tested without Iris. A failed lookup propagates: assuming not-minted holds
+ * the mark above reality forever, assuming minted drops it, and neither is a
+ * measurement.
+ */
+export async function inFlightAmount(
+  burns: readonly Burn[],
+  isMinted: (nonce: string) => Promise<boolean>,
+): Promise<bigint> {
+  const flags = await Promise.all(burns.map((b) => isMinted(b.nonce)));
+  return burns.reduce((sum, b, i) => (flags[i] ? sum : sum + b.amount), 0n);
+}

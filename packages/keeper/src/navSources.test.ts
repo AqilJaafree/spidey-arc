@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readVaultNav, readRelayBalance } from './navSources.js';
+import { readVaultNav, readRelayBalance, inFlightAmount } from './navSources.js';
 
 /** A viem-shaped stub: only `readContract` is exercised. */
 function stubClient(handler: (args: any) => Promise<unknown>) {
@@ -70,5 +70,60 @@ describe('readRelayBalance', () => {
     // lost and haircut every claimant. Throwing is the only safe answer.
     const client = stubClient(async () => { throw new Error('base rpc down'); });
     await expect(readRelayBalance(client, USDC, RELAY)).rejects.toThrow('base rpc down');
+  });
+});
+
+describe('inFlightAmount', () => {
+  it('counts a burn whose message has not been minted', async () => {
+    const burns = [{ nonce: '0xaa', amount: 1_000_000n }];
+    const minted = new Set<string>();
+    expect(await inFlightAmount(burns, (n) => Promise.resolve(minted.has(n)))).toBe(1_000_000n);
+  });
+
+  it('does not count a burn already minted on the far side', async () => {
+    // Double-counting here would overstate the vault's assets — the capital is
+    // already inside the relay balance the caller read separately.
+    const burns = [{ nonce: '0xaa', amount: 1_000_000n }];
+    const minted = new Set(['0xaa']);
+    expect(await inFlightAmount(burns, (n) => Promise.resolve(minted.has(n)))).toBe(0n);
+  });
+
+  it('sums several outstanding burns', async () => {
+    const burns = [
+      { nonce: '0xaa', amount: 1_000_000n },
+      { nonce: '0xbb', amount: 2_500_000n },
+      { nonce: '0xcc', amount: 500_000n },
+    ];
+    const minted = new Set(['0xbb']);
+    expect(await inFlightAmount(burns, (n) => Promise.resolve(minted.has(n)))).toBe(1_500_000n);
+  });
+
+  it('is zero when there are no burns', async () => {
+    expect(await inFlightAmount([], async () => false)).toBe(0n);
+  });
+
+  it('propagates a lookup failure rather than assuming not-minted', async () => {
+    // Assuming not-minted would count the burn as in flight forever, holding
+    // the mark above reality. Assuming minted would drop it. Neither is a
+    // measurement, so the run must fail instead.
+    const burns = [{ nonce: '0xaa', amount: 1_000_000n }];
+    await expect(
+      inFlightAmount(burns, () => Promise.reject(new Error('iris unreachable'))),
+    ).rejects.toThrow('iris unreachable');
+  });
+
+  it('propagates a failure even when another lookup succeeds', async () => {
+    // A partial answer is not an answer: summing the burns that resolved and
+    // ignoring the one that did not is exactly the silent default this module
+    // refuses to produce.
+    const burns = [
+      { nonce: '0xaa', amount: 1_000_000n },
+      { nonce: '0xbb', amount: 2_000_000n },
+    ];
+    await expect(
+      inFlightAmount(burns, (n) =>
+        n === '0xaa' ? Promise.resolve(false) : Promise.reject(new Error('iris unreachable')),
+      ),
+    ).rejects.toThrow('iris unreachable');
   });
 });
