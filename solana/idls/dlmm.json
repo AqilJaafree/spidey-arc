@@ -190,6 +190,251 @@
         80
       ],
       "name": "initialize_position"
+    },
+    {
+      "accounts": [
+        {
+          "name": "lb_pair",
+          "relations": [
+            "position",
+            "bin_array_lower",
+            "bin_array_upper"
+          ],
+          "writable": true
+        },
+        {
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "bin_array_lower",
+          "writable": true
+        },
+        {
+          "name": "bin_array_upper",
+          "writable": true
+        },
+        {
+          "name": "sender",
+          "signer": true
+        },
+        {
+          "name": "reserve_x",
+          "relations": [
+            "lb_pair"
+          ],
+          "writable": true
+        },
+        {
+          "name": "reserve_y",
+          "relations": [
+            "lb_pair"
+          ],
+          "writable": true
+        },
+        {
+          "name": "user_token_x",
+          "writable": true
+        },
+        {
+          "name": "user_token_y",
+          "writable": true
+        },
+        {
+          "name": "token_x_mint",
+          "relations": [
+            "lb_pair"
+          ]
+        },
+        {
+          "name": "token_y_mint",
+          "relations": [
+            "lb_pair"
+          ]
+        },
+        {
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "name": "token_program"
+        },
+        {
+          "name": "event_authority",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  95,
+                  95,
+                  101,
+                  118,
+                  101,
+                  110,
+                  116,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": [],
+      "discriminator": [
+        169,
+        32,
+        79,
+        137,
+        136,
+        232,
+        70,
+        137
+      ],
+      "name": "claim_fee"
+    },
+    {
+      "accounts": [
+        {
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "lb_pair",
+          "relations": [
+            "position",
+            "bin_array_bitmap_extension",
+            "bin_array_lower",
+            "bin_array_upper"
+          ],
+          "writable": true
+        },
+        {
+          "name": "bin_array_bitmap_extension",
+          "optional": true,
+          "writable": true
+        },
+        {
+          "name": "user_token_x",
+          "writable": true
+        },
+        {
+          "name": "user_token_y",
+          "writable": true
+        },
+        {
+          "name": "reserve_x",
+          "relations": [
+            "lb_pair"
+          ],
+          "writable": true
+        },
+        {
+          "name": "reserve_y",
+          "relations": [
+            "lb_pair"
+          ],
+          "writable": true
+        },
+        {
+          "name": "token_x_mint",
+          "relations": [
+            "lb_pair"
+          ]
+        },
+        {
+          "name": "token_y_mint",
+          "relations": [
+            "lb_pair"
+          ]
+        },
+        {
+          "name": "bin_array_lower",
+          "writable": true
+        },
+        {
+          "name": "bin_array_upper",
+          "writable": true
+        },
+        {
+          "name": "sender",
+          "signer": true
+        },
+        {
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "name": "token_x_program"
+        },
+        {
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "name": "token_y_program"
+        },
+        {
+          "name": "event_authority",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  95,
+                  95,
+                  101,
+                  118,
+                  101,
+                  110,
+                  116,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": [
+        {
+          "name": "from_bin_id",
+          "type": "i32"
+        },
+        {
+          "name": "to_bin_id",
+          "type": "i32"
+        },
+        {
+          "name": "bps_to_remove",
+          "type": "u16"
+        }
+      ],
+      "discriminator": [
+        26,
+        82,
+        102,
+        152,
+        240,
+        74,
+        105,
+        26
+      ],
+      "name": "remove_liquidity_by_range"
     }
   ],
   "accounts": [],
