@@ -38,7 +38,7 @@ The Base `LPVault`/`ScoreOracle`/`Router` share their Arc addresses — determin
 |---|---|
 | `MeteoraReceiver` | `FLfdxZbnkMFCRAgGDTkMzZn3i2X2EKZhYBep6seHjqNp` |
 
-Redeployed 2026-08-07 with the live DLMM CPI; upgrade authority `8sHRx1C6…`. The prior id (`FnQGhy6u…`) was deployed under an authority we don't hold, so it could be neither upgraded nor closed.
+Redeployed 2026-08-07 with the live DLMM CPI, and again the same day with the exit (`withdraw_position`); upgrade authority `8sHRx1C6…`. The prior id (`FnQGhy6u…`) was deployed under an authority we don't hold, so it could be neither upgraded nor closed.
 
 **Base Sepolia** is the complete stack — fully wired, and it runs the whole cycle including routing into a live Uniswap position.
 
@@ -90,7 +90,7 @@ So adapters report `null` when they cannot measure, every number carries the ran
   packages/keeper    Merkle tree builder, rebalance planner, CCTP relayer
   apps/web           Next.js comparison UI
   contracts/         LPVault (ERC-4626) + ScoreOracle + Router + UniV3Executor
-  solana/            MeteoraReceiver — two-stage CCTP hook (Anchor)
+  solana/            MeteoraReceiver — two-stage CCTP hook, DLMM in and out (Anchor)
 ```
 
 Three contracts do the work:
@@ -225,6 +225,13 @@ Arc charges gas in USDC, so these are literal cents of user yield.
 |---|---:|---:|
 | `on_cctp_receive` (stage 1) | 6,052 CU | 20,000 |
 | `deploy_position` (stage 2) | 12,353 CU | 250,000 |
+| `withdraw_position` (the exit) | 178,394 CU | 250,000 |
+| `adopt_position` (migration) | 7,750 CU | 20,000 |
+| `release_credit` | 12,834 CU | 20,000 |
+
+The exit is the only instruction here that will not fit in Solana's 200,000 CU
+default — two DLMM CPIs plus their event CPIs — so the caller must raise the
+limit. `withdraw-dlmm.ts` asks for 600,000.
 
 ## Tests
 
@@ -234,10 +241,12 @@ Arc charges gas in USDC, so these are literal cents of user yield.
 | Contracts, offline (`forge`) | 103 |
 | Invariants (mutation-tested) | 12 |
 | Fork, live Base Sepolia | 8 |
-| Solana unit + property | 20 |
-| Solana on-chain (validator + devnet) | 15 |
+| Solana unit + property | 31 |
+| Solana on-chain (validator) | 23 passing, 3 skipped |
 
 The invariant suite was verified by deliberately breaking the contract six ways; each was caught by multiple independent invariants. A green suite proves nothing until you show it can fail.
+
+The three skipped Solana tests need a live DLMM program, which a local validator has none of; they are skipped loudly, naming where the behaviour is proven instead, rather than deleted or left red. The same rule caught two things worth having: the exit's signer test originally failed client-side as an unknown signer and would have passed with the on-chain constraint deleted, and `position_range`'s tests could not detect an off-by-one until they asserted *acceptance* rather than only rejection. Both were found by mutating the code and checking the test failed.
 
 ## Bugs found
 
@@ -283,7 +292,13 @@ Also worth stating plainly: **Arc's native gas is 18 decimals, not 6.** Several 
 
   Proven, 2026-08-07: `scripts/deposit-dlmm.ts` put 0.3 USDC one-sided into pool `XZgB99jbwsZyCZF7h5tLGPgXYGdZ9bX8UqLQV3upwZw` (Circle USDC = token_y) — position owned by the credit PDA, pool USDC reserve up by exactly that. Two devnet gotchas the script now handles: `InitializeBinArray` needs a raised compute budget, and `bin_array_lower`/`bin_array_upper` must be **distinct** arrays (DLMM borrows both mutably), so the range straddles two 70-bin arrays below the active bin.
 
-- **No `remove_liquidity` CPI.** `deploy_position` adds to the position; nothing yet pulls liquidity back out, so capital *in* a DLMM position cannot return to Arc through the program. Undeployed credit still exits via `release_credit`. This is the natural next build — the on-chain half of the Solana return leg.
+- ~~**No `remove_liquidity` CPI.**~~ **Live on devnet.** `withdraw_position` claims fees and removes 10,000 bps over the position's full range in one transaction, then re-marks `credit.amount` from the *measured* vault balance rather than any declared number — so impermanent loss and earned fees show up honestly instead of as a counter custody cannot back. That is LPVault bug #10 read backwards.
+
+  Full exit is a constant, not an argument. The position's range lives in `Credit`, written by `init_position`, so a partial removal that left liquidity behind while the books said `deployed == 0` is not expressible. Fees are claimed inside the same instruction because only the `Credit` PDA can sign as position owner — a fee left behind at exit would be unreachable forever, the same one-way door this closes, one step smaller. The non-USDC side goes straight to a vault-authority-owned account and never enters program custody.
+
+  Proven, 2026-08-07, on the position `deposit-dlmm.ts` opened: 0.3 USDC out of bins [-355, -336] in pool `XZgB99jbwsZyCZF7h5tLGPgXYGdZ9bX8UqLQV3upwZw` (`3rFbxHQM…`), then all 0.4 USDC released to the vault authority (`3CnqG99X…`), leaving the vault empty and the credit zeroed. The other side returned zero, correctly — active bin was -335, so the position sat entirely below it and had never traded through.
+
+  Two things the live run settled that the tests could not. `claim_fee` does **not** revert on a position with no accrued fees, so the exit needs no conditional escape. And `adopt_position` — the one-time migration for the credit that predates the position fields — could not have worked as first written: Anchor deserializes an account *before* it applies `realloc`, so `Account<Credit>` failed `AccountDidNotDeserialize` against precisely the short account it existed to grow (`3K98dczw…` after the rewrite). Nothing but contact with the real account would have shown that.
 
   </details>
 - **No automation.** No daemon, no scheduler, no signer, no alerting. Every on-chain action so far was manual.
