@@ -83,7 +83,20 @@ async function main() {
     throw new Error(`LbPair layout drift: reserve_y read as ${p.reserveY.toBase58()}, expected ${RESERVE_Y.toBase58()}`);
   }
 
-  let acct: any = await (program.account as any).credit.fetch(credit);
+  // The whole point of adopt_position is an account that predates the three
+  // position fields — and such an account cannot be decoded by the typed
+  // fetch, which expects the wider layout and reads off the end. So the
+  // pre-migration read is raw. Anything at the old size has not been adopted;
+  // that is the only fact needed to decide.
+  const raw = await conn.getAccountInfo(credit);
+  if (!raw) throw new Error(`credit ${credit.toBase58()} does not exist`);
+  const OLD_LEN = 163;
+  console.log(`\ncredit ${credit.toBase58()} — ${raw.data.length} bytes` +
+    (raw.data.length === OLD_LEN ? ' (pre-migration)' : ''));
+
+  let acct: any = raw.data.length === OLD_LEN
+    ? { position: PublicKey.default }
+    : await (program.account as any).credit.fetch(credit);
 
   if (acct.position.equals(PublicKey.default)) {
     const position = new PublicKey(process.env.POSITION!);
@@ -101,6 +114,20 @@ async function main() {
       .rpc();
     console.log(`   ${sig}`);
     acct = await (program.account as any).credit.fetch(credit);
+
+    // adopt_position writes these three fields at hand-computed offsets,
+    // because the account it migrates cannot be deserialized by the typed
+    // form. Read them back and check: a wrong offset is unrecoverable, since
+    // PositionAlreadyAdopted refuses a second attempt.
+    if (!acct.position.equals(position)) {
+      throw new Error(`adopt wrote position ${acct.position.toBase58()}, expected ${position.toBase58()}`);
+    }
+    if (acct.positionLowerBinId !== lower || acct.positionWidth !== width) {
+      throw new Error(
+        `adopt wrote [${acct.positionLowerBinId}, width ${acct.positionWidth}], expected [${lower}, width ${width}]`,
+      );
+    }
+    console.log('   read-back OK — position, lower bin and width all match');
   } else {
     console.log(`\n1) already adopted: ${acct.position.toBase58()}`);
   }

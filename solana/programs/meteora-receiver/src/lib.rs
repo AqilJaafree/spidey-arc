@@ -66,6 +66,14 @@ pub const VAULT_SEED: &[u8] = b"vault";
 /// anything once impermanent loss or fees have moved the position.
 pub const FULL_BPS: u16 = 10_000;
 
+/// `Credit`'s length before it learned its position: discriminator plus every
+/// field through `bump`.
+pub const CREDIT_LEN_V1: usize = 163;
+
+/// `Credit`'s length now. The three position fields are appended, so V1's
+/// offsets all still hold and [`adopt_position`] can grow an account in place.
+pub const CREDIT_LEN_V2: usize = 8 + Credit::INIT_SPACE;
+
 #[program]
 pub mod meteora_receiver {
     use super::*;
@@ -122,24 +130,105 @@ pub mod meteora_receiver {
     /// its owner, orphaned means unreachable forever. That is the failure this
     /// whole return leg exists to remove; it must not be reintroduced by the
     /// instruction that enables it.
+    ///
+    /// # Why every check here is written out by hand
+    ///
+    /// This was originally an `Account<'info, Credit>` carrying Anchor's
+    /// `realloc`, which reads correctly and is wrong. Anchor deserializes an
+    /// account *before* it applies the `realloc` constraint, so the typed form
+    /// fails `AccountDidNotDeserialize` (3003) against any account shorter than
+    /// the current struct — which is every account this instruction exists to
+    /// migrate. Confirmed on devnet, 2026-08-07, against the live credit.
+    ///
+    /// So the account arrives unchecked and this handler reproduces what Anchor
+    /// would have done: owner, discriminator, seed derivation from the *stored*
+    /// authority and pool, and the signer matching that stored authority. The
+    /// V1 offsets are still valid to read because the three new fields were
+    /// appended rather than inserted — that choice is what makes an in-place
+    /// migration possible at all.
     pub fn adopt_position(
         ctx: Context<AdoptPosition>,
         position: Pubkey,
         lower_bin_id: i32,
         width: i32,
     ) -> Result<()> {
-        let credit = &mut ctx.accounts.credit;
-        require!(
-            credit.position == Pubkey::default(),
-            ReceiverError::PositionAlreadyAdopted
-        );
         // Rejects width <= 0 and a range that leaves i32, so a credit can never
         // record a position it could not later derive an exit range for.
         position_range(lower_bin_id, width).map_err(ReceiverError::from)?;
 
-        credit.position = position;
-        credit.position_lower_bin_id = lower_bin_id;
-        credit.position_width = width;
+        let info = ctx.accounts.credit.to_account_info();
+        require_keys_eq!(*info.owner, crate::ID, ReceiverError::CreditNotOwnedByProgram);
+
+        // Every check Anchor would have applied, by hand. See the doc comment:
+        // the typed form cannot read the account this instruction exists for.
+        let (stored_authority, already_adopted) = {
+            let data = info.try_borrow_data()?;
+            require!(data.len() >= CREDIT_LEN_V1, ReceiverError::CreditTooSmall);
+            require!(
+                data[..8] == Credit::DISCRIMINATOR[..],
+                ReceiverError::CreditDiscriminatorMismatch
+            );
+
+            let authority = Pubkey::try_from(&data[8..40]).unwrap();
+            let pool = Pubkey::try_from(&data[40..72]).unwrap();
+            let bump = data[CREDIT_LEN_V1 - 1];
+
+            let expected = Pubkey::create_program_address(
+                &[CREDIT_SEED, authority.as_ref(), pool.as_ref(), &[bump]],
+                &crate::ID,
+            )
+            .map_err(|_| error!(ReceiverError::CreditSeedsMismatch))?;
+            require_keys_eq!(expected, info.key(), ReceiverError::CreditSeedsMismatch);
+
+            // An account already at the new length may still be unadopted — a
+            // fresh `init_credit` writes the fields as zero. Length alone does
+            // not answer it; the stored pubkey does.
+            let adopted = data.len() >= CREDIT_LEN_V2
+                && Pubkey::try_from(&data[CREDIT_LEN_V1..CREDIT_LEN_V1 + 32]).unwrap()
+                    != Pubkey::default();
+
+            (authority, adopted)
+        };
+
+        require_keys_eq!(
+            stored_authority,
+            ctx.accounts.vault_authority.key(),
+            ReceiverError::CreditAuthorityMismatch
+        );
+        require!(!already_adopted, ReceiverError::PositionAlreadyAdopted);
+
+        // Grow, keeping the account rent-exempt at its new size. The payer
+        // covers the difference; a shortfall must fail here rather than leave a
+        // rent-collectable account holding a live position pointer.
+        if info.data_len() < CREDIT_LEN_V2 {
+            let needed = Rent::get()?.minimum_balance(CREDIT_LEN_V2);
+            let held = info.lamports();
+            if needed > held {
+                anchor_lang::system_program::transfer(
+                    CpiContext::new(
+                        ctx.accounts.system_program.to_account_info(),
+                        anchor_lang::system_program::Transfer {
+                            from: ctx.accounts.payer.to_account_info(),
+                            to: info.clone(),
+                        },
+                    ),
+                    needed - held,
+                )?;
+            }
+            info.resize(CREDIT_LEN_V2)?;
+        }
+
+        let mut data = info.try_borrow_mut_data()?;
+        data[CREDIT_LEN_V1..CREDIT_LEN_V1 + 32].copy_from_slice(position.as_ref());
+        data[CREDIT_LEN_V1 + 32..CREDIT_LEN_V1 + 36].copy_from_slice(&lower_bin_id.to_le_bytes());
+        data[CREDIT_LEN_V1 + 36..CREDIT_LEN_V2].copy_from_slice(&width.to_le_bytes());
+
+        anchor_lang::solana_program::log::sol_log_data(&[
+            b"adopt",
+            position.as_ref(),
+            &lower_bin_id.to_le_bytes(),
+            &width.to_le_bytes(),
+        ]);
         Ok(())
     }
 
@@ -675,16 +764,14 @@ pub struct AdoptPosition<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
 
-    #[account(
-        mut,
-        seeds = [CREDIT_SEED, vault_authority.key().as_ref(), credit.pool.as_ref()],
-        bump = credit.bump,
-        has_one = vault_authority,
-        realloc = 8 + Credit::INIT_SPACE,
-        realloc::payer = payer,
-        realloc::zero = true,
-    )]
-    pub credit: Account<'info, Credit>,
+    /// CHECK: validated by hand in the handler — owner, discriminator, seeds
+    /// and stored authority — because `Account<'info, Credit>` cannot be used
+    /// here at all. Anchor deserializes before it applies `realloc`, so the
+    /// typed form fails `AccountDidNotDeserialize` on precisely the short
+    /// account this instruction exists to grow. Confirmed on devnet against
+    /// the live credit, 2026-08-07.
+    #[account(mut)]
+    pub credit: UncheckedAccount<'info>,
 
     pub system_program: Program<'info, System>,
 }
@@ -1062,4 +1149,14 @@ pub enum ReceiverError {
     NothingDeployed,
     #[msg("the other-side recipient does not match the opposite pool mint")]
     RecipientMintMismatch,
+    #[msg("the credit account is not owned by this program")]
+    CreditNotOwnedByProgram,
+    #[msg("the credit account is shorter than any layout this program wrote")]
+    CreditTooSmall,
+    #[msg("the account is not a Credit")]
+    CreditDiscriminatorMismatch,
+    #[msg("the credit account does not derive from its stored authority and pool")]
+    CreditSeedsMismatch,
+    #[msg("only the credit's own vault authority may adopt its position")]
+    CreditAuthorityMismatch,
 }
