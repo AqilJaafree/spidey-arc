@@ -143,4 +143,42 @@ describe('the exit', () => {
       assert.match(String(err), /PositionAlreadyAdopted/);
     }
   });
+
+  it('refuses to deploy into a position the credit does not own', async () => {
+    // The credit adopted `adoptedPosition` in the previous test. A different
+    // position account — even a plausible one — must not be accepted.
+    try {
+      await program.methods
+        .deployPosition({
+          amount: USDC(1),
+          targetBinId: 100,
+          activeBinId: 100,
+          minAmountOut: new anchor.BN(1),
+          minBinId: 100,
+          maxBinId: 119,
+          maxActiveBinSlippage: 5,
+          strategyType: 0,
+        })
+        .accounts({
+          caller: payer.publicKey,
+          credit,
+          vaultTokenAccount,
+          position: Keypair.generate().publicKey,
+          lbPair: pool,
+          binArrayBitmapExtension: null,
+          reserve: Keypair.generate().publicKey,
+          tokenMint: mint,
+          binArrayLower: Keypair.generate().publicKey,
+          binArrayUpper: Keypair.generate().publicKey,
+          eventAuthority: Keypair.generate().publicKey,
+          dlmmProgram: new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo'),
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .rpc();
+      assert.fail('deployed into a position the credit does not own');
+    } catch (err: any) {
+      // Anchor's `address` constraint reports ConstraintAddress.
+      assert.match(String(err), /ConstraintAddress|AnchorError/);
+    }
+  });
 });

@@ -196,6 +196,14 @@ pub mod meteora_receiver {
     /// level; `owner` is the `Credit` PDA, signed here via its seeds.
     pub fn init_position(ctx: Context<InitPosition>, lower_bin_id: i32, width: i32) -> Result<()> {
         let credit = &ctx.accounts.credit;
+        require!(
+            credit.position == Pubkey::default(),
+            ReceiverError::PositionAlreadyAdopted
+        );
+        // Reject a range the exit could not later derive, before the position
+        // exists rather than after capital is in it.
+        position_range(lower_bin_id, width).map_err(ReceiverError::from)?;
+
         let vault_authority = credit.vault_authority;
         let pool = credit.pool;
         let bump = credit.bump;
@@ -221,6 +229,11 @@ pub mod meteora_receiver {
             lower_bin_id,
             width,
         )?;
+
+        let credit = &mut ctx.accounts.credit;
+        credit.position = ctx.accounts.position.key();
+        credit.position_lower_bin_id = lower_bin_id;
+        credit.position_width = width;
 
         Ok(())
     }
@@ -604,8 +617,13 @@ pub struct DeployPosition<'info> {
     // follow-up — today the keeper owns it, and the return leg still goes
     // through `release_credit`.
 
-    /// CHECK: the DLMM position; validated by the DLMM program.
-    #[account(mut)]
+    /// CHECK: the DLMM position, pinned to the one this credit owns.
+    ///
+    /// The DLMM program already rejects a position owned by anyone else, since
+    /// the CPI signs as the `Credit` PDA — but a *different* position owned by
+    /// the same PDA would have been accepted. Pinning it closes that, and is
+    /// what lets `withdraw_position` derive the exit range from stored state.
+    #[account(mut, address = credit.position)]
     pub position: UncheckedAccount<'info>,
 
     /// CHECK: the pool. Pinned to the credit's pool so funds cannot be diverted.
@@ -650,6 +668,7 @@ pub struct InitPosition<'info> {
     /// The credit this position belongs to; signs the CPI as the position owner
     /// via its seeds.
     #[account(
+        mut,
         seeds = [CREDIT_SEED, credit.vault_authority.as_ref(), credit.pool.as_ref()],
         bump = credit.bump,
     )]
