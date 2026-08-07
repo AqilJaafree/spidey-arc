@@ -5,6 +5,8 @@
 //! that matter — above all "stage 1 cannot fail" — can be proven by exhaustive
 //! and property testing rather than by a handful of integration cases.
 
+use anchor_lang::prelude::Pubkey;
+
 /// Stage 1's entire computation.
 ///
 /// # Total by construction
@@ -81,6 +83,61 @@ pub fn check_deploy(
         return Err(DeployRejection::ImpossibleSlippageBound);
     }
     Ok(())
+}
+
+/// Which side of the DLMM pool holds the token this program has custody of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Side {
+    CustodyIsX,
+    CustodyIsY,
+}
+
+/// Why an exit was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WithdrawRejection {
+    PoolDoesNotHoldCustodyMint,
+    InvalidPositionRange,
+}
+
+/// Decide which DLMM side the custody token sits on.
+///
+/// The caller does not get to say. `remove_liquidity_by_range` takes both
+/// `user_token_x` and `user_token_y`, and the program must put its own vault
+/// account on the correct one — resolving it from the mint is what lets the
+/// same program serve a pool with USDC as token_x and one with USDC as
+/// token_y, which "one-sided USDC on every chain" requires.
+pub fn resolve_sides(
+    vault_mint: Pubkey,
+    token_x_mint: Pubkey,
+    token_y_mint: Pubkey,
+) -> Result<Side, WithdrawRejection> {
+    if vault_mint == token_x_mint {
+        Ok(Side::CustodyIsX)
+    } else if vault_mint == token_y_mint {
+        Ok(Side::CustodyIsY)
+    } else {
+        Err(WithdrawRejection::PoolDoesNotHoldCustodyMint)
+    }
+}
+
+/// The position's full bin range, from what `init_position` was opened with.
+///
+/// `initialize_position(lower_bin_id, width)` opens `width` bins starting at
+/// `lower_bin_id`, so the inclusive upper bound is `lower + width - 1`.
+///
+/// Widened to i64 before the arithmetic: at the i32 extremes the direct form
+/// overflows, and an overflow here would be a panic in a release build with
+/// `overflow-checks = true` — the same trap `check_deploy` sidesteps when it
+/// computes bin drift.
+pub fn position_range(lower_bin_id: i32, width: i32) -> Result<(i32, i32), WithdrawRejection> {
+    if width <= 0 {
+        return Err(WithdrawRejection::InvalidPositionRange);
+    }
+    let upper = lower_bin_id as i64 + width as i64 - 1;
+    if upper > i32::MAX as i64 || upper < i32::MIN as i64 {
+        return Err(WithdrawRejection::InvalidPositionRange);
+    }
+    Ok((lower_bin_id, upper as i32))
 }
 
 #[cfg(test)]
@@ -253,6 +310,78 @@ mod tests {
             let left = check_deploy(10, 10, 0, target, target - drift, tol, 1);
             let right = check_deploy(10, 10, 0, target, target + drift, tol, 1);
             prop_assert_eq!(left, right);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Exit — side resolution and range derivation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn resolve_sides_finds_custody_on_x() {
+        let usdc = Pubkey::new_unique();
+        let other = Pubkey::new_unique();
+        assert_eq!(resolve_sides(usdc, usdc, other), Ok(Side::CustodyIsX));
+    }
+
+    #[test]
+    fn resolve_sides_finds_custody_on_y() {
+        // The devnet pool XZgB99… has Circle USDC as token_y. That is a
+        // per-pool accident, which is exactly why the side is resolved from
+        // the mint rather than assumed.
+        let usdc = Pubkey::new_unique();
+        let other = Pubkey::new_unique();
+        assert_eq!(resolve_sides(usdc, other, usdc), Ok(Side::CustodyIsY));
+    }
+
+    #[test]
+    fn resolve_sides_rejects_a_pool_that_does_not_hold_the_custody_mint() {
+        assert_eq!(
+            resolve_sides(Pubkey::new_unique(), Pubkey::new_unique(), Pubkey::new_unique()),
+            Err(WithdrawRejection::PoolDoesNotHoldCustodyMint)
+        );
+    }
+
+    #[test]
+    fn position_range_covers_the_whole_position() {
+        // init_position(lower = 100, width = 20) opens bins 100..=119.
+        assert_eq!(position_range(100, 20), Ok((100, 119)));
+    }
+
+    #[test]
+    fn position_range_handles_a_single_bin() {
+        assert_eq!(position_range(-5, 1), Ok((-5, -5)));
+    }
+
+    #[test]
+    fn position_range_rejects_a_non_positive_width() {
+        assert_eq!(position_range(100, 0), Err(WithdrawRejection::InvalidPositionRange));
+        assert_eq!(position_range(100, -1), Err(WithdrawRejection::InvalidPositionRange));
+    }
+
+    #[test]
+    fn position_range_rejects_a_range_that_leaves_i32() {
+        // The case a naive `lower + width - 1` would panic on.
+        assert_eq!(position_range(i32::MAX, 2), Err(WithdrawRejection::InvalidPositionRange));
+        assert_eq!(position_range(i32::MAX - 1, i32::MAX), Err(WithdrawRejection::InvalidPositionRange));
+    }
+
+    proptest! {
+        /// Neither exit rule may panic, for the same reason `check_deploy`
+        /// may not: a panic is not a rejection, it is a dead transaction.
+        #[test]
+        fn exit_rules_never_panic(lower: i32, width: i32) {
+            let _ = position_range(lower, width);
+        }
+
+        /// A derived range is always non-empty and always starts where the
+        /// position starts — the property that makes "full exit" true.
+        #[test]
+        fn derived_range_starts_at_the_position_and_is_non_empty(lower: i32, width: i32) {
+            if let Ok((from, to)) = position_range(lower, width) {
+                prop_assert_eq!(from, lower);
+                prop_assert!(to >= from);
+            }
         }
     }
 }
