@@ -29,7 +29,10 @@ use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Token, TokenAccount, Transfer};
 
 pub mod rules;
-use rules::{available, check_deploy, credit_after_receive, DeployRejection};
+use rules::{
+    available, check_deploy, credit_after_receive, position_range, resolve_sides, DeployRejection,
+    Side, WithdrawRejection,
+};
 
 declare_id!("FLfdxZbnkMFCRAgGDTkMzZn3i2X2EKZhYBep6seHjqNp");
 
@@ -94,7 +97,43 @@ pub mod meteora_receiver {
         credit.deployed = 0;
         credit.bin_tolerance = 0;
         credit.nonce = 0;
+        credit.position = Pubkey::default();
+        credit.position_lower_bin_id = 0;
+        credit.position_width = 0;
         credit.bump = ctx.bumps.credit;
+        Ok(())
+    }
+
+    /// Point an existing credit at the position it already owns.
+    ///
+    /// A migration, needed exactly once: the devnet credit and its 0.3 USDC
+    /// position predate the three fields above. `init_position` writes them for
+    /// every position opened from now on, so new credits never reach here.
+    ///
+    /// Refuses when a position is already recorded — see
+    /// [`ReceiverError::PositionAlreadyAdopted`]. Overwriting the pointer would
+    /// orphan the first position, and since only the `Credit` PDA can sign as
+    /// its owner, orphaned means unreachable forever. That is the failure this
+    /// whole return leg exists to remove; it must not be reintroduced by the
+    /// instruction that enables it.
+    pub fn adopt_position(
+        ctx: Context<AdoptPosition>,
+        position: Pubkey,
+        lower_bin_id: i32,
+        width: i32,
+    ) -> Result<()> {
+        let credit = &mut ctx.accounts.credit;
+        require!(
+            credit.position == Pubkey::default(),
+            ReceiverError::PositionAlreadyAdopted
+        );
+        // Rejects width <= 0 and a range that leaves i32, so a credit can never
+        // record a position it could not later derive an exit range for.
+        position_range(lower_bin_id, width).map_err(ReceiverError::from)?;
+
+        credit.position = position;
+        credit.position_lower_bin_id = lower_bin_id;
+        credit.position_width = width;
         Ok(())
     }
 
@@ -390,6 +429,22 @@ pub struct Credit {
     /// {@link Credit::amount} can decide how much of the vault account moves.
     pub cctp_authority: Pubkey,
     pub bump: u8,
+    /// The DLMM position this credit's capital is deployed into, and the range
+    /// it was opened over.
+    ///
+    /// Stored so [`withdraw_position`] can derive the position's *full* range
+    /// itself and pin the account, rather than trusting a caller-supplied
+    /// range. That is what makes "full exit" a property of the program instead
+    /// of a promise the keeper has to keep: a narrow partial removal, which
+    /// would leave liquidity behind while the books report `deployed == 0`, is
+    /// not expressible.
+    ///
+    /// Appended to the end of the struct on purpose — every field above keeps
+    /// its byte offset, which is what lets [`adopt_position`] migrate an
+    /// existing account in place.
+    pub position: Pubkey,
+    pub position_lower_bin_id: i32,
+    pub position_width: i32,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug)]
@@ -442,6 +497,29 @@ pub struct InitCredit<'info> {
         space = 8 + Credit::INIT_SPACE,
         seeds = [CREDIT_SEED, vault_authority.as_ref(), pool.as_ref()],
         bump,
+    )]
+    pub credit: Account<'info, Credit>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct AdoptPosition<'info> {
+    /// Only the vault authority may point a credit at a position.
+    pub vault_authority: Signer<'info>,
+
+    /// Funds the account's growth.
+    #[account(mut)]
+    pub payer: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [CREDIT_SEED, vault_authority.key().as_ref(), credit.pool.as_ref()],
+        bump = credit.bump,
+        has_one = vault_authority,
+        realloc = 8 + Credit::INIT_SPACE,
+        realloc::payer = payer,
+        realloc::zero = true,
     )]
     pub credit: Account<'info, Credit>,
 
@@ -678,6 +756,17 @@ impl From<DeployRejection> for ReceiverError {
     }
 }
 
+impl From<WithdrawRejection> for ReceiverError {
+    fn from(r: WithdrawRejection) -> Self {
+        match r {
+            WithdrawRejection::PoolDoesNotHoldCustodyMint => {
+                ReceiverError::PoolDoesNotHoldCustodyMint
+            }
+            WithdrawRejection::InvalidPositionRange => ReceiverError::InvalidPositionRange,
+        }
+    }
+}
+
 #[error_code]
 pub enum ReceiverError {
     #[msg("no undeployed credit available")]
@@ -700,4 +789,10 @@ pub enum ReceiverError {
     AmountExceedsCustody,
     #[msg("strategy_type must be 0/1/2 (Spot/Curve/BidAsk OneSide)")]
     UnknownStrategyType,
+    #[msg("this credit already has a position; a second would orphan the first")]
+    PositionAlreadyAdopted,
+    #[msg("the pool does not hold the mint this program has custody of")]
+    PoolDoesNotHoldCustodyMint,
+    #[msg("the recorded position range is empty or outside i32")]
+    InvalidPositionRange,
 }
