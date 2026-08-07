@@ -226,6 +226,7 @@ Arc charges gas in USDC, so these are literal cents of user yield.
 | `on_cctp_receive` (stage 1) | 6,052 CU | 20,000 |
 | `deploy_position` (stage 2) | 12,353 CU | 250,000 |
 | `withdraw_position` (the exit) | 178,394 CU | 250,000 |
+| `retire_position` | 24,487 CU | 40,000 |
 | `adopt_position` (migration) | 7,750 CU | 20,000 |
 | `release_credit` | 12,834 CU | 20,000 |
 
@@ -297,6 +298,10 @@ Also worth stating plainly: **Arc's native gas is 18 decimals, not 6.** Several 
   Full exit is a constant, not an argument. The position's range lives in `Credit`, written by `init_position`, so a partial removal that left liquidity behind while the books said `deployed == 0` is not expressible. Fees are claimed inside the same instruction because only the `Credit` PDA can sign as position owner — a fee left behind at exit would be unreachable forever, the same one-way door this closes, one step smaller. The non-USDC side goes straight to a vault-authority-owned account and never enters program custody.
 
   Proven, 2026-08-07, on the position `deposit-dlmm.ts` opened: 0.3 USDC out of bins [-355, -336] in pool `XZgB99jbwsZyCZF7h5tLGPgXYGdZ9bX8UqLQV3upwZw` (`3rFbxHQM…`), then all 0.4 USDC released to the vault authority (`3CnqG99X…`), leaving the vault empty and the credit zeroed. The other side returned zero, correctly — active bin was -335, so the position sat entirely below it and had never traded through.
+
+  A credit is no longer bound to one position for life. `init_position` and `adopt_position` refuse a second position, because overwriting the pointer orphans the first and only the `Credit` PDA can sign as its owner — but that left a credit married to whatever range it first opened at, useless once the active bin walked away. `retire_position` closes an empty position and, when it is the recorded one, clears the pointer so a fresh range can be opened. It deliberately does *not* pin the position account: half its job is reclaiming positions the credit owns but never adopted, created by attempts that failed before adding liquidity. DLMM already refuses one this PDA does not own (`InvalidPositionOwner`) and one still holding liquidity (`NonEmptyPosition`); a local copy of those rules is a copy that can drift.
+
+  Proven, 2026-08-07: both devnet positions closed — the recorded one (`2cCPiVzU…`) and an unadopted orphan whose bin arrays both resolved to index -5, the double-mutable-borrow that killed it at birth (`NCHQ9oNG…`). 0.1148 SOL of rent recovered and the pointer cleared. That orphan was expected to be unclosable for the same reason it was abandoned; `close_position` turns out not to borrow the arrays the way `add_liquidity` does. Attempting it beat reasoning about it.
 
   Two things the live run settled that the tests could not. `claim_fee` does **not** revert on a position with no accrued fees, so the exit needs no conditional escape. And `adopt_position` — the one-time migration for the credit that predates the position fields — could not have worked as first written: Anchor deserializes an account *before* it applies `realloc`, so `Account<Credit>` failed `AccountDidNotDeserialize` against precisely the short account it existed to grow (`3K98dczw…` after the rewrite). Nothing but contact with the real account would have shown that.
 
