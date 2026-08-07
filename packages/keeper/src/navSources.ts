@@ -56,21 +56,19 @@ export async function readVaultNav(client: PublicClient, vault: Address): Promis
   ]);
 
   const [deployedAssets, updatedAt, epoch] = nav as readonly [bigint, bigint, bigint];
-  const navCooldownSeconds = Number(cooldown);
-  const maxNavAgeSeconds = Number(maxAge);
 
+  // Only what the chain said. The keeper's reporting margin is deliberately
+  // absent: `shouldReport` derives it from these three and rejects an
+  // incoherent one, so deriving it here too would be a second source of truth
+  // for the single bound that can be wrong.
   return {
     deployedAssets,
     updatedAt: Number(updatedAt),
     epoch,
     bounds: {
-      navCooldownSeconds,
-      maxNavAgeSeconds,
+      navCooldownSeconds: Number(cooldown),
+      maxNavAgeSeconds: Number(maxAge),
       maxNavDeltaBps: Number(maxDeltaBps),
-      // Two cooldowns of headroom: one to try, one to retry, before the mark
-      // goes stale. Derived from what the chain says rather than fixed, so
-      // raising MAX_NAV_AGE cannot silently leave the keeper reporting late.
-      reportAtAgeSeconds: maxNavAgeSeconds - 2 * navCooldownSeconds,
     },
   };
 }

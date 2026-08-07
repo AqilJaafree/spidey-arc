@@ -30,9 +30,10 @@ describe('readVaultNav', () => {
     expect(got.bounds.maxNavDeltaBps).toBe(500);
   });
 
-  it('derives the report-at age from the contract bounds, not a constant', async () => {
-    // A margin proportional to what the chain says, so raising MAX_NAV_AGE
-    // cannot silently leave the keeper reporting too late.
+  it('reports only what the chain said, leaving the margin to be derived', async () => {
+    // The reporting margin is `shouldReport`'s to derive: it is the one bound
+    // not read from the chain, and deriving it here as well would be a second
+    // source of truth for the only value that can be wrong.
     const client = stubClient(async ({ functionName }) => {
       switch (functionName) {
         case 'nav': return [1n, 1_770_000_000n, 1n];
@@ -44,8 +45,8 @@ describe('readVaultNav', () => {
     });
 
     const got = await readVaultNav(client, VAULT);
-    // Two cooldowns of headroom before the deadline.
-    expect(got.bounds.reportAtAgeSeconds).toBe(36_000 - 2 * 3600);
+    expect(got.bounds.reportAtAgeSeconds).toBeUndefined();
+    expect(got.bounds.maxNavAgeSeconds).toBe(36_000);
   });
 
   it('propagates a read failure rather than defaulting', async () => {
