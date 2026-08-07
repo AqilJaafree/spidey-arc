@@ -376,4 +376,77 @@ describe('the exit', () => {
       }
     });
   });
+
+  /**
+   * Retiring a position — the instruction that unbinds a credit from the one
+   * range it first opened at, and reclaims the rent of positions it owns but
+   * never adopted.
+   *
+   * The CPI itself is proven on devnet; DLMM is not on the local validator. So
+   * these pin the guards that fire during account validation, before the CPI:
+   * who may call, where the rent may land, and which pool.
+   */
+  describe('retiring a position', () => {
+    function retireAccounts(overrides: Record<string, PublicKey> = {}) {
+      return {
+        vaultAuthority: vaultAuthority.publicKey,
+        credit,
+        position: adoptedPosition,
+        lbPair: pool,
+        binArrayLower: Keypair.generate().publicKey,
+        binArrayUpper: Keypair.generate().publicKey,
+        rentReceiver: vaultAuthority.publicKey,
+        eventAuthority: Keypair.generate().publicKey,
+        dlmmProgram: DLMM,
+        ...overrides,
+      };
+    }
+
+    it('refuses a caller who is not the vault authority', async () => {
+      // `payer` is passed as the account AND signs, so the transaction builds
+      // and reaches the program. Passing the real authority while signing with
+      // someone else fails client-side as an unknown signer, which would prove
+      // nothing — that test passes with the seeds constraint deleted.
+      try {
+        await program.methods
+          .retirePosition()
+          .accounts(
+            retireAccounts({
+              vaultAuthority: payer.publicKey,
+              rentReceiver: payer.publicKey,
+            }),
+          )
+          .rpc();
+        assert.fail('a stranger retired the position');
+      } catch (err: any) {
+        assert.match(String(err), /ConstraintSeeds/);
+      }
+    });
+
+    it('refuses a rent receiver that is not the vault authority', async () => {
+      try {
+        await program.methods
+          .retirePosition()
+          .accounts(retireAccounts({ rentReceiver: payer.publicKey }))
+          .signers([vaultAuthority])
+          .rpc();
+        assert.fail('sent the reclaimed rent somewhere else');
+      } catch (err: any) {
+        assert.match(String(err), /ConstraintAddress/);
+      }
+    });
+
+    it("refuses an lb_pair that is not the credit's pool", async () => {
+      try {
+        await program.methods
+          .retirePosition()
+          .accounts(retireAccounts({ lbPair: Keypair.generate().publicKey }))
+          .signers([vaultAuthority])
+          .rpc();
+        assert.fail('retired against a pool this credit was not opened on');
+      } catch (err: any) {
+        assert.match(String(err), /ConstraintAddress/);
+      }
+    });
+  });
 });

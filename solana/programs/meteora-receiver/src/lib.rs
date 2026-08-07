@@ -588,6 +588,74 @@ pub mod meteora_receiver {
         Ok(())
     }
 
+    /// Close an empty DLMM position this credit owns, reclaiming its rent.
+    ///
+    /// Two jobs, one instruction. When the position is the one `credit` has
+    /// recorded, closing it also clears the pointer — which is what lets a
+    /// credit open a fresh position afterwards. Without that, a credit is bound
+    /// for life to the range it first opened at: `withdraw_position` empties
+    /// the position but the account persists with its original bins, so once
+    /// the pool's active bin walks away from that range the capital can only be
+    /// redeployed somewhere useless.
+    ///
+    /// When it is *not* the recorded position, this reclaims the rent of one
+    /// the credit owns but never adopted — a position created by an attempt
+    /// that failed before it added liquidity. Those are invisible to the books
+    /// and would otherwise hold their rent forever, since only the `Credit` PDA
+    /// can sign as their owner.
+    ///
+    /// The position is deliberately not pinned to `credit.position`: pinning it
+    /// would make the second job impossible. Safety comes from DLMM instead,
+    /// which rejects a position this PDA does not own (`InvalidPositionOwner`,
+    /// 6088) and one that still holds liquidity (`NonEmptyPosition`, 6030).
+    /// Delegating both beats restating them — a local copy of DLMM's rules is a
+    /// copy that can drift from the program actually enforcing them.
+    pub fn retire_position(ctx: Context<RetirePosition>) -> Result<()> {
+        let credit = &ctx.accounts.credit;
+        let position = ctx.accounts.position.key();
+        let is_recorded = position == credit.position;
+
+        // Only meaningful for the recorded position — an unadopted one is not
+        // in the books at all, so `deployed` says nothing about it.
+        if is_recorded {
+            require!(credit.deployed == 0, ReceiverError::PositionStillDeployed);
+        }
+
+        let vault_authority = credit.vault_authority;
+        let pool = credit.pool;
+        let bump = credit.bump;
+        let seeds: &[&[u8]] = &[CREDIT_SEED, vault_authority.as_ref(), pool.as_ref(), &[bump]];
+
+        dlmm::cpi::close_position(CpiContext::new_with_signer(
+            ctx.accounts.dlmm_program.to_account_info(),
+            dlmm::cpi::accounts::ClosePosition {
+                position: ctx.accounts.position.to_account_info(),
+                lb_pair: ctx.accounts.lb_pair.to_account_info(),
+                bin_array_lower: ctx.accounts.bin_array_lower.to_account_info(),
+                bin_array_upper: ctx.accounts.bin_array_upper.to_account_info(),
+                sender: ctx.accounts.credit.to_account_info(),
+                rent_receiver: ctx.accounts.rent_receiver.to_account_info(),
+                event_authority: ctx.accounts.event_authority.to_account_info(),
+                program: ctx.accounts.dlmm_program.to_account_info(),
+            },
+            &[seeds],
+        ))?;
+
+        if is_recorded {
+            let credit = &mut ctx.accounts.credit;
+            credit.position = Pubkey::default();
+            credit.position_lower_bin_id = 0;
+            credit.position_width = 0;
+        }
+
+        anchor_lang::solana_program::log::sol_log_data(&[
+            b"retire",
+            position.as_ref(),
+            &[is_recorded as u8],
+        ]);
+        Ok(())
+    }
+
     /// Return undeployed credit to the vault authority's control.
     ///
     /// The escape hatch for when stage 2 can never succeed — the pool is
@@ -1090,6 +1158,52 @@ pub struct WithdrawPosition<'info> {
     pub token_program: Program<'info, Token>,
 }
 
+#[derive(Accounts)]
+pub struct RetirePosition<'info> {
+    /// Only the vault authority may retire a position.
+    pub vault_authority: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [CREDIT_SEED, vault_authority.key().as_ref(), credit.pool.as_ref()],
+        bump = credit.bump,
+        has_one = vault_authority,
+    )]
+    pub credit: Account<'info, Credit>,
+
+    /// CHECK: intentionally NOT pinned to `credit.position` — retiring an
+    /// unadopted position is half this instruction's purpose. DLMM rejects one
+    /// the `Credit` PDA does not own, which is the check that matters.
+    #[account(mut)]
+    pub position: UncheckedAccount<'info>,
+
+    /// CHECK: the pool, pinned to the credit's own.
+    #[account(mut, address = credit.pool)]
+    pub lb_pair: UncheckedAccount<'info>,
+
+    /// CHECK: lower bin array; validated on the CPI.
+    #[account(mut)]
+    pub bin_array_lower: UncheckedAccount<'info>,
+
+    /// CHECK: upper bin array; validated on the CPI.
+    #[account(mut)]
+    pub bin_array_upper: UncheckedAccount<'info>,
+
+    /// Where the reclaimed rent lands. Pinned to the vault authority rather
+    /// than free-form, for the same reason `release_credit` pins its recipient:
+    /// otherwise "retire" would be a withdrawal of rent to anywhere the signer
+    /// likes.
+    #[account(mut, address = vault_authority.key())]
+    pub rent_receiver: SystemAccount<'info>,
+
+    /// CHECK: the DLMM program's event-authority PDA.
+    pub event_authority: UncheckedAccount<'info>,
+
+    /// CHECK: the DLMM program, pinned to the address the IDL carries.
+    #[account(address = dlmm::ID)]
+    pub dlmm_program: UncheckedAccount<'info>,
+}
+
 impl From<DeployRejection> for ReceiverError {
     fn from(r: DeployRejection) -> Self {
         match r {
@@ -1159,4 +1273,6 @@ pub enum ReceiverError {
     CreditSeedsMismatch,
     #[msg("only the credit's own vault authority may adopt its position")]
     CreditAuthorityMismatch,
+    #[msg("the recorded position still has capital deployed; withdraw first")]
+    PositionStillDeployed,
 }
