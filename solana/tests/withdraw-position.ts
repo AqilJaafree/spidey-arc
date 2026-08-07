@@ -181,4 +181,54 @@ describe('the exit', () => {
       assert.match(String(err), /ConstraintAddress|AnchorError/);
     }
   });
+
+  const DLMM = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
+
+  /**
+   * The bin arrays, reserves and event authority are junk keypairs: every test
+   * in this file rejects before the CPI, which is the point — the CPI is proven
+   * on devnet.
+   *
+   * `position`, `lbPair` and the two mints are NOT junk. Anchor validates
+   * accounts in declaration order, so a wrong `position` fails
+   * `ConstraintAddress` before any handler code runs, and a `tokenYMint` with
+   * no real accounts on it makes the mint check unsatisfiable — either way the
+   * test would pass for the wrong reason.
+   */
+  function withdrawAccounts(other: PublicKey) {
+    return {
+      vaultAuthority: vaultAuthority.publicKey,
+      credit,
+      vaultTokenAccount,
+      otherRecipient: other,
+      position: adoptedPosition,
+      lbPair: pool,
+      binArrayBitmapExtension: null,
+      reserveX: Keypair.generate().publicKey,
+      reserveY: Keypair.generate().publicKey,
+      tokenXMint: mint,
+      tokenYMint: mintOther,
+      binArrayLower: Keypair.generate().publicKey,
+      binArrayUpper: Keypair.generate().publicKey,
+      eventAuthority: Keypair.generate().publicKey,
+      dlmmProgram: DLMM,
+      tokenProgram: TOKEN_PROGRAM_ID,
+    };
+  }
+
+  it('refuses to exit when nothing is deployed', async () => {
+    // credit.deployed is 0 — the $1,000 was credited but never deployed. Every
+    // account here is well-formed, so validation and the mint check pass and
+    // the bookkeeping guard is what rejects.
+    try {
+      await program.methods
+        .withdrawPosition()
+        .accounts(withdrawAccounts(otherRecipient))
+        .signers([vaultAuthority])
+        .rpc();
+      assert.fail('exited a position that does not exist');
+    } catch (err: any) {
+      assert.match(String(err), /NothingDeployed/);
+    }
+  });
 });

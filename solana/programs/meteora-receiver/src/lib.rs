@@ -60,6 +60,12 @@ pub const CREDIT_SEED: &[u8] = b"credit";
 /// Seed for the program-owned USDC account CCTP mints into.
 pub const VAULT_SEED: &[u8] = b"vault";
 
+/// Full exit, in basis points. A constant, not an argument: a partial removal
+/// would leave liquidity in the position while the books report
+/// `deployed == 0`, and no proportional re-mark makes that counter mean
+/// anything once impermanent loss or fees have moved the position.
+pub const FULL_BPS: u16 = 10_000;
+
 #[program]
 pub mod meteora_receiver {
     use super::*;
@@ -349,6 +355,150 @@ pub mod meteora_receiver {
         Ok(())
     }
 
+    /// Unwind the DLMM position and bring the capital back into custody.
+    ///
+    /// The other half of [`deploy_position`], and the reason the Solana leg is
+    /// a round trip rather than a one-way door. Only the `Credit` PDA can sign
+    /// as the position's owner, so without this instruction nothing anywhere
+    /// could ever unwind that position — the capital would be unreachable, not
+    /// merely inconvenient to reach.
+    ///
+    /// # Fees are claimed here, not separately
+    ///
+    /// `remove_liquidity_by_range` does not claim fees, and fees accrue on both
+    /// sides whichever side the position was funded on. A fee left behind at
+    /// exit is unreachable for the same reason the position is — so claiming
+    /// inside the exit makes leaving them behind impossible rather than
+    /// something the keeper must remember.
+    ///
+    /// # The books are measured, never computed
+    ///
+    /// `credit.amount` is re-marked from the vault account's balance after the
+    /// CPIs, never from a declared number and never by subtracting what we
+    /// believe went in. Impermanent loss and earned fees then show up honestly
+    /// as `amount` differing from what was deployed. LPVault bug #10 is what
+    /// the other approach costs: a position returned 4.985 of 5 USDC, the
+    /// counter still said 5, the vault looked solvent, no haircut applied, and
+    /// the depositor could not be paid at all.
+    pub fn withdraw_position(ctx: Context<WithdrawPosition>) -> Result<()> {
+        let credit = &ctx.accounts.credit;
+
+        // Account shape is checked before the balance guard, so a malformed
+        // account set is reported as malformed rather than masked by a
+        // bookkeeping error — the caller learns what is actually wrong.
+        let side = custody_side(
+            ctx.accounts.vault_token_account.mint,
+            ctx.accounts.token_x_mint.key(),
+            ctx.accounts.token_y_mint.key(),
+        )
+        .map_err(ReceiverError::from)?;
+
+        let expected_other_mint = match side {
+            Side::CustodyIsX => ctx.accounts.token_y_mint.key(),
+            Side::CustodyIsY => ctx.accounts.token_x_mint.key(),
+        };
+        require_keys_eq!(
+            ctx.accounts.other_recipient.mint,
+            expected_other_mint,
+            ReceiverError::RecipientMintMismatch
+        );
+
+        require!(credit.deployed > 0, ReceiverError::NothingDeployed);
+
+        let (from_bin_id, to_bin_id) =
+            position_range(credit.position_lower_bin_id, credit.position_width)
+                .map_err(ReceiverError::from)?;
+
+        let (user_token_x, user_token_y) = match side {
+            Side::CustodyIsX => (
+                ctx.accounts.vault_token_account.to_account_info(),
+                ctx.accounts.other_recipient.to_account_info(),
+            ),
+            Side::CustodyIsY => (
+                ctx.accounts.other_recipient.to_account_info(),
+                ctx.accounts.vault_token_account.to_account_info(),
+            ),
+        };
+
+        let vault_authority = credit.vault_authority;
+        let pool = credit.pool;
+        let bump = credit.bump;
+        let seeds: &[&[u8]] = &[CREDIT_SEED, vault_authority.as_ref(), pool.as_ref(), &[bump]];
+
+        // 1. Fees first, while the position still carries its fee state.
+        dlmm::cpi::claim_fee(CpiContext::new_with_signer(
+            ctx.accounts.dlmm_program.to_account_info(),
+            dlmm::cpi::accounts::ClaimFee {
+                lb_pair: ctx.accounts.lb_pair.to_account_info(),
+                position: ctx.accounts.position.to_account_info(),
+                bin_array_lower: ctx.accounts.bin_array_lower.to_account_info(),
+                bin_array_upper: ctx.accounts.bin_array_upper.to_account_info(),
+                sender: ctx.accounts.credit.to_account_info(),
+                reserve_x: ctx.accounts.reserve_x.to_account_info(),
+                reserve_y: ctx.accounts.reserve_y.to_account_info(),
+                user_token_x: user_token_x.clone(),
+                user_token_y: user_token_y.clone(),
+                token_x_mint: ctx.accounts.token_x_mint.to_account_info(),
+                token_y_mint: ctx.accounts.token_y_mint.to_account_info(),
+                token_program: ctx.accounts.token_program.to_account_info(),
+                event_authority: ctx.accounts.event_authority.to_account_info(),
+                program: ctx.accounts.dlmm_program.to_account_info(),
+            },
+            &[seeds],
+        ))?;
+
+        // 2. Everything out, over the position's whole range.
+        dlmm::cpi::remove_liquidity_by_range(
+            CpiContext::new_with_signer(
+                ctx.accounts.dlmm_program.to_account_info(),
+                dlmm::cpi::accounts::RemoveLiquidityByRange {
+                    position: ctx.accounts.position.to_account_info(),
+                    lb_pair: ctx.accounts.lb_pair.to_account_info(),
+                    bin_array_bitmap_extension: ctx
+                        .accounts
+                        .bin_array_bitmap_extension
+                        .as_ref()
+                        .map(|a| a.to_account_info()),
+                    user_token_x,
+                    user_token_y,
+                    reserve_x: ctx.accounts.reserve_x.to_account_info(),
+                    reserve_y: ctx.accounts.reserve_y.to_account_info(),
+                    token_x_mint: ctx.accounts.token_x_mint.to_account_info(),
+                    token_y_mint: ctx.accounts.token_y_mint.to_account_info(),
+                    bin_array_lower: ctx.accounts.bin_array_lower.to_account_info(),
+                    bin_array_upper: ctx.accounts.bin_array_upper.to_account_info(),
+                    sender: ctx.accounts.credit.to_account_info(),
+                    token_x_program: ctx.accounts.token_program.to_account_info(),
+                    token_y_program: ctx.accounts.token_program.to_account_info(),
+                    event_authority: ctx.accounts.event_authority.to_account_info(),
+                    program: ctx.accounts.dlmm_program.to_account_info(),
+                },
+                &[seeds],
+            ),
+            from_bin_id,
+            to_bin_id,
+            FULL_BPS,
+        )?;
+
+        // 3. Measure. The CPIs moved tokens into the vault account behind our
+        //    back, so the cached deserialization is stale.
+        ctx.accounts.vault_token_account.reload()?;
+        let measured = ctx.accounts.vault_token_account.amount;
+
+        let credit = &mut ctx.accounts.credit;
+        credit.deployed = 0;
+        credit.amount = measured;
+
+        anchor_lang::solana_program::log::sol_log_data(&[
+            b"withdraw",
+            &measured.to_le_bytes(),
+            &from_bin_id.to_le_bytes(),
+            &to_bin_id.to_le_bytes(),
+        ]);
+
+        Ok(())
+    }
+
     /// Return undeployed credit to the vault authority's control.
     ///
     /// The escape hatch for when stage 2 can never succeed — the pool is
@@ -612,10 +762,11 @@ pub struct DeployPosition<'info> {
     // `position` and the bin arrays are keeper prerequisites: the position is
     // created with `initialize_position(lower_bin_id, width)` and each bin
     // array with `initialize_bin_array(index)`, where
-    // `index = floor(bin_id / 70)`, before this runs. Making the program own
-    // the position (so it can later *remove* liquidity for the return leg) is a
-    // follow-up — today the keeper owns it, and the return leg still goes
-    // through `release_credit`.
+    // `index = floor(bin_id / 70)`, before this runs. The position itself is
+    // owned by the `Credit` PDA — created by `init_position`, or pointed at by
+    // `adopt_position` — which is what lets `withdraw_position` sign as its
+    // owner and remove the liquidity again. The return leg is that instruction
+    // followed by `release_credit`, not `release_credit` alone.
 
     /// CHECK: the DLMM position, pinned to the one this credit owns.
     ///
@@ -762,6 +913,96 @@ pub struct ReleaseCredit<'info> {
     pub token_program: Program<'info, Token>,
 }
 
+#[derive(Accounts)]
+pub struct WithdrawPosition<'info> {
+    /// Only the vault authority may unwind. `deploy_position` is
+    /// permissionless because pushing credited capital into a pinned pool
+    /// cannot be misdirected; pulling it out chooses a recipient, so it takes
+    /// the same signer `release_credit` takes.
+    pub vault_authority: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [CREDIT_SEED, vault_authority.key().as_ref(), credit.pool.as_ref()],
+        bump = credit.bump,
+        has_one = vault_authority,
+    )]
+    pub credit: Account<'info, Credit>,
+
+    /// Where the custody token lands. The same account `deploy_position` drew
+    /// from, so the capital returns to exactly where `release_credit` can
+    /// already send it home from.
+    #[account(
+        mut,
+        seeds = [VAULT_SEED, credit.vault_authority.as_ref(), credit.pool.as_ref()],
+        bump,
+        token::authority = credit,
+    )]
+    pub vault_token_account: Account<'info, TokenAccount>,
+
+    /// Where the *other* side of the pool lands.
+    ///
+    /// A one-sided USDC position sits below the active bin; if price falls
+    /// through those bins the USDC is bought and returns as the other token,
+    /// and fees accrue on both sides in every case. So the program will be
+    /// handed a token it holds no account for. Sending it straight to a
+    /// vault-authority-owned account keeps it out of program custody entirely —
+    /// no second PDA, no sweep instruction, no rent for an account that is
+    /// usually near-empty. Constrained the same way `release_credit`
+    /// constrains its recipient; the mint is checked in the handler, against
+    /// whichever side turns out not to be custody.
+    #[account(
+        mut,
+        constraint = other_recipient.owner == vault_authority.key()
+            @ ReceiverError::RecipientNotOwnedByVaultAuthority,
+    )]
+    pub other_recipient: Account<'info, TokenAccount>,
+
+    /// CHECK: the DLMM position, pinned to the one this credit owns.
+    #[account(mut, address = credit.position)]
+    pub position: UncheckedAccount<'info>,
+
+    /// CHECK: the pool, pinned so capital cannot be pulled from another.
+    #[account(mut, address = credit.pool)]
+    pub lb_pair: UncheckedAccount<'info>,
+
+    /// CHECK: optional bin-array bitmap extension; validated by the DLMM program.
+    #[account(mut)]
+    pub bin_array_bitmap_extension: Option<UncheckedAccount<'info>>,
+
+    /// CHECK: token X reserve; validated by the DLMM program against the pool.
+    #[account(mut)]
+    pub reserve_x: UncheckedAccount<'info>,
+
+    /// CHECK: token Y reserve; validated by the DLMM program against the pool.
+    #[account(mut)]
+    pub reserve_y: UncheckedAccount<'info>,
+
+    /// CHECK: token X mint; validated by the DLMM program against the pool,
+    /// and read here to decide which side holds custody.
+    pub token_x_mint: UncheckedAccount<'info>,
+
+    /// CHECK: token Y mint; same.
+    pub token_y_mint: UncheckedAccount<'info>,
+
+    /// CHECK: lower bin array; validated on the CPI.
+    #[account(mut)]
+    pub bin_array_lower: UncheckedAccount<'info>,
+
+    /// CHECK: upper bin array; validated on the CPI.
+    #[account(mut)]
+    pub bin_array_upper: UncheckedAccount<'info>,
+
+    /// CHECK: the DLMM program's event-authority PDA.
+    pub event_authority: UncheckedAccount<'info>,
+
+    /// CHECK: the DLMM program, pinned to the address the IDL carries.
+    #[account(address = dlmm::ID)]
+    pub dlmm_program: UncheckedAccount<'info>,
+
+    pub token_program: Program<'info, Token>,
+}
+
 impl From<DeployRejection> for ReceiverError {
     fn from(r: DeployRejection) -> Self {
         match r {
@@ -817,4 +1058,8 @@ pub enum ReceiverError {
     NonPositiveWidth,
     #[msg("the recorded position range extends past i32")]
     PositionRangeOutOfBounds,
+    #[msg("nothing is deployed into the position")]
+    NothingDeployed,
+    #[msg("the other-side recipient does not match the opposite pool mint")]
+    RecipientMintMismatch,
 }
