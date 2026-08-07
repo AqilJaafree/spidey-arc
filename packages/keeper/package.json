@@ -19,5 +19,8 @@
     "@spidey/adapters": "workspace:*",
     "@spidey/core": "workspace:*",
     "viem": "^2.21.55"
+  },
+  "devDependencies": {
+    "fast-check": "^4.9.0"
   }
 }
