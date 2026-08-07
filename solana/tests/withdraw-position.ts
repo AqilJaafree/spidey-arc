@@ -231,4 +231,149 @@ describe('the exit', () => {
       assert.match(String(err), /NothingDeployed/);
     }
   });
+
+  /**
+   * A second credit, with its own authority, so the wrong-signer case is a real
+   * mismatch rather than a missing signature. Each test here pins a guard that
+   * must fire BEFORE the exit touches DLMM — the CPI itself is proven on devnet
+   * by scripts/withdraw-dlmm.ts, because DLMM is not on the local validator.
+   */
+  describe('the guards on the way out', () => {
+    const authority2 = Keypair.generate();
+    const pool2 = Keypair.generate().publicKey;
+    let credit2: PublicKey;
+    let vault2: PublicKey;
+    let position2: PublicKey;
+    let goodRecipient: PublicKey;
+    let strangerRecipient: PublicKey;
+    let wrongMintRecipient: PublicKey;
+
+    before(async () => {
+      [credit2] = PublicKey.findProgramAddressSync(
+        [CREDIT_SEED, authority2.publicKey.toBuffer(), pool2.toBuffer()],
+        program.programId,
+      );
+      [vault2] = PublicKey.findProgramAddressSync(
+        [VAULT_SEED, authority2.publicKey.toBuffer(), pool2.toBuffer()],
+        program.programId,
+      );
+
+      const sig = await provider.connection.requestAirdrop(authority2.publicKey, 1e9);
+      await provider.connection.confirmTransaction(sig);
+
+      goodRecipient = await createAccount(
+        provider.connection, payer, mintOther, authority2.publicKey, Keypair.generate(),
+      );
+      strangerRecipient = await createAccount(
+        provider.connection, payer, mintOther, Keypair.generate().publicKey, Keypair.generate(),
+      );
+      // Owned by the right party, but holding the CUSTODY mint, not the other side.
+      wrongMintRecipient = await createAccount(
+        provider.connection, payer, mint, authority2.publicKey, Keypair.generate(),
+      );
+
+      await program.methods
+        .initCredit(authority2.publicKey, pool2, destination, payer.publicKey)
+        .accounts({ payer: payer.publicKey, credit: credit2, systemProgram: SystemProgram.programId })
+        .rpc();
+
+      await program.methods
+        .initVault(authority2.publicKey, pool2)
+        .accounts({
+          payer: payer.publicKey,
+          credit: credit2,
+          vaultTokenAccount: vault2,
+          mint,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+          rent: SYSVAR_RENT_PUBKEY,
+        })
+        .rpc();
+
+      position2 = Keypair.generate().publicKey;
+      await program.methods
+        .adoptPosition(position2, 100, 20)
+        .accounts({
+          vaultAuthority: authority2.publicKey,
+          payer: payer.publicKey,
+          credit: credit2,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([authority2])
+        .rpc();
+    });
+
+    function accountsFor(other: PublicKey, authority: PublicKey = authority2.publicKey) {
+      return {
+        vaultAuthority: authority,
+        credit: credit2,
+        vaultTokenAccount: vault2,
+        otherRecipient: other,
+        // The real adopted position: a wrong one fails ConstraintAddress during
+        // account validation, which would mask the check each test is for.
+        position: position2,
+        lbPair: pool2,
+        binArrayBitmapExtension: null,
+        reserveX: Keypair.generate().publicKey,
+        reserveY: Keypair.generate().publicKey,
+        tokenXMint: mint,
+        tokenYMint: mintOther,
+        binArrayLower: Keypair.generate().publicKey,
+        binArrayUpper: Keypair.generate().publicKey,
+        eventAuthority: Keypair.generate().publicKey,
+        dlmmProgram: DLMM,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      };
+    }
+
+    it('refuses a caller who is not the vault authority', async () => {
+      // The outer authority, passed as the account AND signing, so the
+      // transaction actually builds and reaches the program. Passing
+      // authority2 as the account while signing with someone else would be
+      // rejected client-side as an unknown signer, proving nothing about the
+      // on-chain guard — this test would then pass with the seeds constraint
+      // deleted.
+      try {
+        await program.methods
+          .withdrawPosition()
+          .accounts(accountsFor(goodRecipient, vaultAuthority.publicKey))
+          .signers([vaultAuthority])
+          .rpc();
+        assert.fail('a stranger unwound the position');
+      } catch (err: any) {
+        assert.match(String(err), /ConstraintSeeds/);
+      }
+    });
+
+    it('refuses an other-side recipient the vault authority does not own', async () => {
+      try {
+        await program.methods
+          .withdrawPosition()
+          .accounts(accountsFor(strangerRecipient))
+          .signers([authority2])
+          .rpc();
+        assert.fail('sent the other side to an account owned by someone else');
+      } catch (err: any) {
+        assert.match(String(err), /RecipientNotOwnedByVaultAuthority/);
+      }
+    });
+
+    it('refuses an other-side recipient holding the custody mint', async () => {
+      // Owned by the right party, wrong mint: this is the account the CUSTODY
+      // side lands in, so accepting it would send both sides to one place and
+      // silently inflate the measured balance the books are re-marked from.
+      try {
+        await program.methods
+          .withdrawPosition()
+          .accounts(accountsFor(wrongMintRecipient))
+          .signers([authority2])
+          .rpc();
+        assert.fail('accepted a recipient holding the custody mint');
+      } catch (err: any) {
+        // Specifically NOT NothingDeployed: credit2.deployed is 0 too, so an
+        // either/or assertion here would pass without the mint check existing.
+        assert.match(String(err), /RecipientMintMismatch/);
+      }
+    });
+  });
 });
