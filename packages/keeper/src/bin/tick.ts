@@ -8,9 +8,10 @@
  *
  *   ARC_RPC_URL=... BASE_RPC_URL=... REPORTER_KEY=0x... pnpm keeper:tick
  *
- * Exits non-zero if any job failed, having attempted them all. Without
- * REPORTER_KEY it runs read-only: every read happens and every decision is
- * reported, nothing is written.
+ * Exits non-zero if any job failed, having attempted them all. With
+ * KEEPER_READ_ONLY=1 and no key it runs read-only: every read happens and
+ * every decision is reported, nothing is written. A missing key without that
+ * flag refuses to start — see `keys.ts` for why silence has to be asked for.
  *
  * The bridge sweep is not registered here yet. Proving the tick itself against
  * the live chain first means a failure in that run has one possible cause.
@@ -21,6 +22,7 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { baseSepolia } from 'viem/chains';
 import { reportNavJob } from '../jobs/reportNav.js';
 import { runJobs, tickExitCode, type Job } from '../tick.js';
+import { reporterMode } from './keys.js';
 
 const ARC_VAULT = '0x93Cd367f8ABEF789e8F6Bb1ce79eB0AB0153122f' as Address;
 const BASE_RELAY = '0x280aD956FFFd3ABba3db59397BE7c4d4d04D32D4' as Address;
@@ -34,14 +36,17 @@ const arcTestnet = defineChain({
 });
 
 async function main() {
+  // First, before a single RPC call: a run that cannot write should cost
+  // nothing and fail immediately, not after two chains have been read.
+  const mode = reporterMode();
+  if (mode.readOnly) console.warn('KEEPER_READ_ONLY — reading and deciding, writing nothing.');
+
   const arc = createPublicClient({ chain: arcTestnet, transport: http() }) as PublicClient;
   const base = createPublicClient({ chain: baseSepolia, transport: http(process.env.BASE_RPC_URL) }) as PublicClient;
 
-  const key = process.env.REPORTER_KEY as `0x${string}` | undefined;
-  const wallet = key
-    ? createWalletClient({ account: privateKeyToAccount(key), chain: arcTestnet, transport: http() })
-    : undefined;
-  if (!wallet) console.warn('REPORTER_KEY unset — read-only, nothing will be written.');
+  const wallet = mode.readOnly
+    ? undefined
+    : createWalletClient({ account: privateKeyToAccount(mode.key), chain: arcTestnet, transport: http() });
 
   const jobs: Job[] = [
     {

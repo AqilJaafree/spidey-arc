@@ -14,8 +14,9 @@
  * realised at claim and gone permanently.
  *
  * The decision itself lives in `jobs/reportNav.ts`, shared with the tick. This
- * file is the clients and the key, nothing more. Without REPORTER_KEY it runs
- * read-only: it still reads and still decides, but writes nothing.
+ * file is the clients and the key, nothing more. With KEEPER_READ_ONLY=1 and
+ * no key it still reads and still decides, but writes nothing; a missing key
+ * without that flag refuses to start, for the reason recorded in `keys.ts`.
  */
 
 import {
@@ -29,6 +30,7 @@ import {
 import { privateKeyToAccount } from 'viem/accounts';
 import { baseSepolia } from 'viem/chains';
 import { reportNavJob } from '../jobs/reportNav.js';
+import { reporterMode } from './keys.js';
 
 const ARC_VAULT = '0x93Cd367f8ABEF789e8F6Bb1ce79eB0AB0153122f' as Address;
 const BASE_RELAY = '0x280aD956FFFd3ABba3db59397BE7c4d4d04D32D4' as Address;
@@ -42,6 +44,11 @@ const arcTestnet = defineChain({
 });
 
 async function main() {
+  // First, before a single RPC call: a run that cannot write should cost
+  // nothing and fail immediately, not after two chains have been read.
+  const mode = reporterMode();
+  if (mode.readOnly) console.warn('KEEPER_READ_ONLY — reading and deciding, writing nothing.');
+
   // `as PublicClient` is a type-level widening only. A chain carries its own
   // block formatter, so the client viem infers is a *narrower* type than the
   // generic `PublicClient` the job takes, and TypeScript will not unify the
@@ -53,11 +60,9 @@ async function main() {
     transport: http(process.env.BASE_RPC_URL),
   }) as PublicClient;
 
-  const key = process.env.REPORTER_KEY as `0x${string}` | undefined;
-  const wallet = key
-    ? createWalletClient({ account: privateKeyToAccount(key), chain: arcTestnet, transport: http() })
-    : undefined;
-  if (!wallet) console.warn('REPORTER_KEY unset — read-only, nothing will be written.');
+  const wallet = mode.readOnly
+    ? undefined
+    : createWalletClient({ account: privateKeyToAccount(mode.key), chain: arcTestnet, transport: http() });
 
   console.log(
     await reportNavJob({
