@@ -11,7 +11,8 @@
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "report-nav": "tsx src/bin/report-nav.ts"
+    "report-nav": "tsx src/bin/report-nav.ts",
+    "tick": "tsx src/bin/tick.ts"
   },
   "dependencies": {
     "@circle-fin/adapter-solana": "^1.6.4",

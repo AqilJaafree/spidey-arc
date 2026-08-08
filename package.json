@@ -14,7 +14,8 @@
     "api": "pnpm --filter @spidey/api dev",
     "web": "pnpm --filter @spidey/web dev",
     "capture": "pnpm --filter @spidey/adapters capture",
-    "keeper:report-nav": "pnpm --filter @spidey/keeper report-nav"
+    "keeper:report-nav": "pnpm --filter @spidey/keeper report-nav",
+    "keeper:tick": "pnpm --filter @spidey/keeper tick"
   },
   "pnpm": {
     "onlyBuiltDependencies": ["esbuild"]
