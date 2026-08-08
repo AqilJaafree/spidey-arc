@@ -54,3 +54,45 @@ export async function readVenueChain(
   })) as readonly [bigint, bigint, number, number, number, number];
   return chainForDomain(Number(venue[4]));
 }
+
+/** `LPVault.activeVenueBitmap` — bit n set means venue n is registered. */
+export const VAULT_BITMAP_ABI = [
+  {
+    type: 'function', name: 'activeVenueBitmap', stateMutability: 'view',
+    inputs: [], outputs: [{ type: 'uint256' }],
+  },
+] as const;
+
+/**
+ * Which venues sit on a CCTP domain.
+ *
+ * The inverse of [`readVenueChain`], and the join a bridge arrival needs:
+ * `recordBridgeArrival` takes a venue id, but a `DepositForBurn` log carries
+ * only the domain it came from.
+ *
+ * Returns every match rather than the first. Two venues on one chain is legal,
+ * and in that case the arrival genuinely is ambiguous — the caller must refuse
+ * to book rather than pick one, and it can only do that if it is told.
+ *
+ * Driven by the bitmap rather than by probing ids: a vault with one venue
+ * would otherwise cost 256 reads a tick.
+ */
+export async function venuesOnDomain(
+  client: PublicClient,
+  vault: Address,
+  domain: number,
+): Promise<number[]> {
+  const bitmap = (await client.readContract({
+    address: vault, abi: VAULT_BITMAP_ABI, functionName: 'activeVenueBitmap',
+  })) as bigint;
+
+  const found: number[] = [];
+  for (let id = 0; id < 256; id++) {
+    if (((bitmap >> BigInt(id)) & 1n) === 0n) continue;
+    const venue = await client.readContract({
+      address: vault, abi: VENUE_ABI, functionName: 'venues', args: [id],
+    });
+    if (Number((venue as readonly unknown[])[4]) === domain) found.push(id);
+  }
+  return found;
+}
