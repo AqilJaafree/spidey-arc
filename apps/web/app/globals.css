@@ -140,6 +140,21 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/*
+ * z-index scale — deliberately spaced so a layer can be inserted later
+ * without renumbering. A sticky element scoped to its own scroll container
+ * (e.g. the ranked table's column header) must never outrank the page
+ * header, which is why these are 10 apart rather than 10/11.
+ *
+ *   z-10  in-container sticky   (table column header, scoped to its own scroll area)
+ *   z-30  page header           (persistent site chrome — apps/web/app/page.tsx)
+ *   z-40  dropdown / popover    (none yet)
+ *   z-50  modal backdrop        (none yet)
+ *   z-60  modal                 (none yet)
+ *   z-70  toast                 (none yet)
+ *   z-80  tooltip               (none yet)
+ */
+
 h2,
 h3 {
   letter-spacing: -0.02em;

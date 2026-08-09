@@ -29,7 +29,9 @@ export function PoolTable({ rows }: { rows: CompareRow[] }) {
               USDC LP venues, showing headline APR against the APR for your deposit size
             </caption>
               <thead>
-                <tr className="sticky top-0 z-10 border-b border-border bg-muted text-left">
+                {/* top-[69px] clears the page header's own height (see z-index scale note
+                    in globals.css) so this sticks just below it, not underneath it. */}
+                <tr className="sticky top-[69px] z-10 border-b border-border bg-muted text-left">
                   <th scope="col" className="px-4 py-3 text-xs font-medium tracking-wide uppercase">
                     Pool
                   </th>
