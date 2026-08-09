@@ -48,14 +48,64 @@ export const METEORA_BASE = 'https://dlmm.datapi.meteora.ag';
 const SOLANA_CCTP_DOMAIN = 5;
 
 /**
- * Half-width for the modelled volume distribution, bps.
+ * Half-width the bin reader aims to cover, bps.
  *
- * Deliberately wide relative to a 4bp bin: `modelledPriceHistogram` spreads
- * volume uniformly, so a wider band puts *less* volume inside a tight δ. That
- * understates `V_δ`, which is the conservative direction. Using `binStep` here
- * would concentrate every trade at the peg and flatter the venue.
+ * Wider than `DEFAULT_RANGE_DELTA_BPS` (10) and wider than anything the
+ * planner pins, so the coverage guard in `othersLiquidityInRange` stays quiet
+ * in normal operation while the fetch stays bounded: 129 bins either side at
+ * `binStep = 4`, which spans at most five `BinArray` accounts.
  */
-const MODELLED_RANGE_BPS = 100;
+export const DEFAULT_BIN_COVERAGE_BPS = 500;
+
+/**
+ * How much wider the modelled volume band is than the width a row declares.
+ *
+ * `modelledPriceHistogram` spreads 24h volume uniformly over ±R, so the share
+ * inside ±δ is `min(1, δ/R)` and the choice of R is the entire model. This used
+ * to be a flat 100bp while enriched rows declare `activeTvlDeltaBps: 500` — five
+ * times narrower than the δ `resolveDeltaBps` then evaluates them at, so
+ * `volumeInRange` summed every bucket and `V_δ` came out as 100% of 24h volume
+ * for every enriched pool, unconditionally. That is the least conservative value
+ * available, and `explain()` handed it to the user as "Captures 100% of 24h
+ * volume in range at ±500bp" — a modelled figure phrased as a measurement.
+ *
+ * The old docblock argued the opposite: a wider band puts less volume inside a
+ * tight δ, which is the conservative direction. True, and inapplicable at the δ
+ * this adapter itself pins. The argument holds only while `R > δ`; below that the
+ * model saturates, and saturation is the optimistic end.
+ *
+ * So the band is derived from the declared width rather than fixed, and the
+ * factor is 2 for a reason already in the codebase: `RANGE_WIDTH_TOLERANCE` is 2,
+ * the factor beyond which `rank.ts` judges two range widths incomparable. A band
+ * of 2δ is therefore the widest — and so most conservative — price range still
+ * related to δ by the ranker's own standard. Capture lands at a flat 51% of 24h
+ * volume at the declared width instead of 100%.
+ *
+ * "Flat" is the dishonesty that remains, and it cannot be fixed from this
+ * response. `orca.ts` derives its band from the pool's own observed daily range
+ * and gets captures spanning 0.024–1.0; this is a constant times a constant, so a
+ * stable pair and a memecoin pair still model identical capture when the
+ * memecoin's real capture is far lower. Meteora publishes an OHLCV endpoint,
+ * which is what the honest version needs — one more fetch per enriched pool,
+ * with `dailyReturnsBps` and `medianOf` already written to consume it and
+ * `priceHistogramSource` already the field that would stop saying
+ * `modelled-uniform-over-range`. This is the conservative interim, not the
+ * answer.
+ */
+export const MODELLED_RANGE_FACTOR = 2;
+
+/** The modelled band for a row that declares `declaredBps` of coverage. */
+export const modelledRangeFor = (declaredBps: number): number =>
+  declaredBps * MODELLED_RANGE_FACTOR;
+
+/**
+ * The band for a row with no bin read behind it.
+ *
+ * Such a row carries no denominator and is excluded by `rank.ts` before `V_δ` is
+ * ever consulted, so this only has to be consistent with the coverage the reader
+ * would have asked for.
+ */
+const MODELLED_RANGE_BPS = modelledRangeFor(DEFAULT_BIN_COVERAGE_BPS);
 
 export type MeteoraToken = {
   address: string;
@@ -261,16 +311,6 @@ export function createMeteoraAdapter(options: MeteoraOptions = {}): VenueAdapter
 
 export const meteoraAdapter: VenueAdapter = createMeteoraAdapter();
 
-/**
- * Half-width the bin reader aims to cover, bps.
- *
- * Wider than `DEFAULT_RANGE_DELTA_BPS` (10) and wider than anything the
- * planner pins, so the coverage guard in `othersLiquidityInRange` stays quiet
- * in normal operation while the fetch stays bounded: 122 bins either side at
- * `binStep = 4`, which spans at most five `BinArray` accounts.
- */
-export const DEFAULT_BIN_COVERAGE_BPS = 500;
-
 /** Pools enriched with bin data per scan. */
 export const DEFAULT_TOP_K = 8;
 
@@ -412,6 +452,12 @@ export async function enrichWithBins(
           activeTvlDeltaBps: declaredBps,
           activeTvlFidelity: 'tick-level' as const,
           liquidityHistogram: histogram,
+          // Re-modelled against the width this row actually declares, not the
+          // default the REST pass assumed. `declaredBps` differs whenever
+          // `coverageFor` widened it to a coarse `binStep` or the caller pinned
+          // its own `coverageBps`, and a band at or below δ makes `V_δ` the whole
+          // of 24h volume — see {@link MODELLED_RANGE_FACTOR}.
+          priceHistogram: modelledPriceHistogram(pool.volume24h, modelledRangeFor(declaredBps)),
         };
       } catch {
         // Deliberately swallowed: a dead RPC degrades one venue's fidelity, it

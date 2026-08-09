@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { rank } from '@spidey/core';
+import { rank, RANGE_WIDTH_TOLERANCE } from '@spidey/core';
 import {
   canAbsorbDeposit,
   coverageFor,
@@ -11,6 +11,8 @@ import {
   enrichWithBins,
   meteoraAdapter,
   METEORA_BASE,
+  MODELLED_RANGE_FACTOR,
+  modelledRangeFor,
   normalizeMeteoraPool,
   poolsUrl,
   topKByFeeRatio,
@@ -471,6 +473,87 @@ describe('enrichWithBins', () => {
     const enriched = await enrichWithBins(pools, { source: flaky, rows });
     expect(enriched.map((p) => p.activeTvlFidelity)).toEqual(['tick-level', 'unavailable']);
     expect(enriched[1]!.tvlUsd).toBe(SOL_USDC.tvl);
+  });
+});
+
+/**
+ * `V_δ` must not come out maximally optimistic at the δ this adapter pins.
+ *
+ * The band was a flat 100bp while enriched rows declare 500, so
+ * `resolveDeltaBps` evaluated them at 500, `volumeInRange` summed every bucket,
+ * and `V_δ` was 100% of 24h volume for every enriched pool — the least
+ * conservative value available, reported to the user as a measurement.
+ */
+describe('the modelled volume band stays wider than the declared coverage', () => {
+  it('is wider by the factor rank.ts calls the limit of comparability', () => {
+    expect(MODELLED_RANGE_FACTOR).toBe(RANGE_WIDTH_TOLERANCE);
+    expect(modelledRangeFor(500)).toBe(1_000);
+    expect(modelledRangeFor(500)).toBeGreaterThan(500);
+    expect(modelledRangeFor(800)).toBeGreaterThan(800);
+  });
+
+  const capture = async (row: MeteoraPool, source: BinSource) => {
+    const r = normalizeMeteoraPool(row, 1);
+    if ('skip' in r) throw new Error('fixture should normalize');
+    const [pool] = await enrichWithBins([r], { source, rows: [row] });
+    const result = rank([pool!], { depositUsd: 1_000, now: 1 });
+    expect(result.excluded).toHaveLength(0);
+    return result.ranked[0]!;
+  };
+
+  it('leaves capture a real fraction rather than saturating at 1', async () => {
+    const row = await capture(SOL_USDC, async () => ({
+      activeId: 0,
+      binStep: 4,
+      bins: [{ binId: 0, amountX: 2n * 10n ** 9n, amountY: 50n * 10n ** 6n }],
+      coveredBps: 500,
+    }));
+
+    expect(row.deltaBps).toBe(500);
+    expect(row.volumeCapture).not.toBeNull();
+    expect(row.volumeCapture!).toBeLessThan(1);
+    expect(row.volumeCapture!).toBeCloseTo(0.5122, 3);
+    // And the user-facing sentence stops reporting a modelled 100% as though it
+    // were measured. That string is `explain()`'s `> 0.8` branch.
+    expect(row.reason).not.toMatch(/Captures 100% of 24h volume/);
+  });
+
+  it('re-models against the width the read declared, not the default', async () => {
+    // `coverageFor` widens the declared width to a coarse `binStep`, so a row
+    // can end up declaring 800 after being modelled at the 500 default. A band
+    // fixed at 2x500 would saturate again at δ = 800.
+    const coarse = { ...SOL_USDC, pool_config: { bin_step: 800, base_fee_pct: 0.04, max_fee_pct: 0 } };
+    const row = await capture(coarse, async () => ({
+      activeId: 0,
+      binStep: 800,
+      bins: [{ binId: 0, amountX: 0n, amountY: 100_000n * 10n ** 6n }],
+      coveredBps: 500,
+    }));
+
+    expect(row.deltaBps).toBe(800);
+    expect(row.volumeCapture!).toBeLessThan(1);
+    expect(row.volumeCapture!).toBeCloseTo(0.5122, 3);
+  });
+
+  it('keeps the whole of 24h volume in the histogram, only spread wider', async () => {
+    // Widening the band must not lose volume — it redistributes it. Otherwise
+    // this would be a silent haircut on the numerator rather than a model of
+    // where the flow sat.
+    const [p] = await enrichWithBins([ok(SOL_USDC)], {
+      source: async () => ({
+        activeId: 0,
+        binStep: 4,
+        bins: [{ binId: 0, amountX: 0n, amountY: 10n ** 6n }],
+        coveredBps: 500,
+      }),
+      rows: [SOL_USDC],
+    });
+    expect(p!.priceHistogram.reduce((sum, b) => sum + b.volumeUsd, 0)).toBeCloseTo(
+      SOL_USDC.volume!['24h']!,
+      3,
+    );
+    expect(p!.priceHistogramSource).toBe('modelled-uniform-over-range');
+    expect(Math.max(...p!.priceHistogram.map((b) => b.bpsFromPeg))).toBe(1_000);
   });
 });
 
