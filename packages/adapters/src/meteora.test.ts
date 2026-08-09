@@ -811,6 +811,76 @@ describe('createRpcBinSource refuses a partial read', () => {
     expect(p!.activeTvlDeltaBps).toBeNull();
   });
 
+  /**
+   * `coverageBps` is a public option and the fetch it implies is not obvious
+   * from it: the reach is geometric in the width and inverse in the bin step, so
+   * ±9000bp is 5,758 bins either side at a 4bp step — 166 `BinArray` accounts,
+   * 1.6MB, past the 100-key `getMultipleAccounts` limit and therefore several
+   * batched round trips per pool, times `topK`.
+   */
+  it('refuses a coverage whose fetch it will not perform', async () => {
+    let scans = 0;
+    const counting = async (_url: string, body: unknown): Promise<unknown> => {
+      const { method, params } = body as { method: string; params: unknown[] };
+      if (method === 'getProgramAccounts') {
+        scans += 1;
+        return { result: [] };
+      }
+      const addresses = params[0] as string[];
+      if (addresses[0] === POOL) return { result: { value: [account(lbPairSlice(0, 4))] } };
+      return { result: { value: [null] } };
+    };
+
+    await expect(createRpcBinSource({ transport: counting })(POOL, 9_000)).rejects.toThrow(
+      /spanning 166 BinArray accounts for POOL — over the 100/,
+    );
+    // Refused before the gPA scan, which is the expensive call: a read this
+    // adapter will not perform should cost nothing to decline.
+    expect(scans).toBe(0);
+  });
+
+  it('still performs the default coverage, including on the finest live bin step', async () => {
+    // The bound has to admit what the adapter actually asks for. ±500bp is 5
+    // accounts at a 4bp step and 16 at 1bp — the cost is set by the finest step,
+    // and a 1bp pool (JupUSD-USDC) is live on the recorded page.
+    let scans = 0;
+    const fine = async (_url: string, body: unknown): Promise<unknown> => {
+      const { method, params } = body as { method: string; params: unknown[] };
+      if (method === 'getProgramAccounts') {
+        scans += 1;
+        return { result: [{ pubkey: 'ARRAY', account: { data: [indexSlice(0n), 'base64'] } }] };
+      }
+      const addresses = params[0] as string[];
+      if (addresses[0] === POOL) return { result: { value: [account(lbPairSlice(0, 1))] } };
+      return { result: { value: [account(binArrayAccount(0n, 10n ** 6n))] } };
+    };
+
+    const reading = await createRpcBinSource({ transport: fine })(POOL, 500);
+    expect(reading.binStep).toBe(1);
+    expect(reading.coveredBps).toBe(500);
+    expect(scans).toBe(1);
+    expect(reading.bins).toHaveLength(70);
+  });
+
+  it('refuses a width no bin ladder reaches, before spending an RPC call', async () => {
+    // 10,000bp down is a price of zero. `binsNeededFor` throws, and it is called
+    // before discovery for the same reason the span check is.
+    let scans = 0;
+    const counting = async (_url: string, body: unknown): Promise<unknown> => {
+      const { method } = body as { method: string };
+      if (method === 'getProgramAccounts') {
+        scans += 1;
+        return { result: [] };
+      }
+      return { result: { value: [account(lbPairSlice(0, 4))] } };
+    };
+
+    await expect(createRpcBinSource({ transport: counting })(POOL, 10_000)).rejects.toThrow(
+      /-10000bp/,
+    );
+    expect(scans).toBe(0);
+  });
+
   it('throws when no discovered array falls inside the needed range', async () => {
     const empty = async (_url: string, body: unknown): Promise<unknown> => {
       const { method, params } = body as { method: string; params: unknown[] };

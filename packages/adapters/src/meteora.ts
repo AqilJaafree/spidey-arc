@@ -35,6 +35,7 @@ import { modelledPriceHistogram } from './series.js';
 import {
   discoverBinArrays,
   getMultipleAccounts,
+  MAX_ACCOUNTS_PER_CALL,
   type SolanaRpcOptions,
 } from './solanaRpc.js';
 import {
@@ -53,9 +54,43 @@ const SOLANA_CCTP_DOMAIN = 5;
  * Wider than `DEFAULT_RANGE_DELTA_BPS` (10) and wider than anything the
  * planner pins, so the coverage guard in `othersLiquidityInRange` stays quiet
  * in normal operation while the fetch stays bounded: 129 bins either side at
- * `binStep = 4`, which spans at most five `BinArray` accounts.
+ * `binStep = 4`, spanning at most five `BinArray` accounts. The cost is
+ * per-bin, so it is set by the *finest* bin step, not the typical one — the same
+ * ±500bp is 513 bins and up to 16 accounts on a 1bp pool like JupUSD-USDC, and
+ * two bins in one account at 400bp. See {@link MAX_BIN_ARRAYS_PER_POOL}.
  */
 export const DEFAULT_BIN_COVERAGE_BPS = 500;
+
+/**
+ * Most `BinArray` accounts one pool's read may span.
+ *
+ * `coverageBps` is a public option, and the reach it buys is geometric in the
+ * width and inverse in the bin step, so the fetch it implies is not obvious from
+ * the number a caller passes. Measured, at `binStep = 4`:
+ *
+ *     ±500bp   ->    129 bins/side ->    5 accounts (   49KB)
+ *     ±1000bp  ->    264 bins/side ->    9 accounts (   89KB)
+ *     ±2000bp  ->    558 bins/side ->   17 accounts (  168KB)
+ *     ±5000bp  ->  1,734 bins/side ->   51 accounts (  505KB)
+ *     ±9000bp  ->  5,758 bins/side ->  166 accounts (1,643KB)
+ *     ±9999bp  -> 23,031 bins/side ->  660 accounts (6,533KB)
+ *
+ * The bound is on accounts rather than on `coverageBps`, because a bps cap
+ * cannot express the cost: ±500bp is 16 accounts at a 1bp step and one at 400bp,
+ * so any single width is either too loose for fine bins or too tight for coarse
+ * ones. And it is set to `MAX_ACCOUNTS_PER_CALL` because that is where the cost
+ * stops being linear — past 100 keys a single pool's bin read becomes several
+ * batched round trips, times `topK` pools, against an endpoint whose
+ * `getProgramAccounts` this adapter is already careful with. At the limit one
+ * read is one round trip of at most ~1MB, which admits ±2927bp at a 1bp step and
+ * ±7497bp at 4bp — far past anything the planner asks for, and short of the
+ * fan-out.
+ *
+ * Exceeding it throws rather than truncating. A truncated histogram under a full
+ * declared width is precisely the `binsNeededFor` bug, and the whole point of
+ * that fix is that the declared width never exceeds what was read.
+ */
+export const MAX_BIN_ARRAYS_PER_POOL = MAX_ACCOUNTS_PER_CALL;
 
 /**
  * How much wider the modelled volume band is than the width a row declares.
@@ -487,6 +522,16 @@ export function createRpcBinSource(options: SolanaRpcOptions = {}): BinSource {
     const reach = binsNeededFor(covered, binStep);
     const lo = arrayIndexOf(activeId - reach);
     const hi = arrayIndexOf(activeId + reach);
+
+    // Checked before the gPA scan, which is the expensive call: a read this
+    // adapter will not perform should cost nothing to refuse. Loud rather than
+    // silent, and rather than quietly truncated — see MAX_BIN_ARRAYS_PER_POOL.
+    const span = hi - lo + 1;
+    if (span > MAX_BIN_ARRAYS_PER_POOL) {
+      throw new RangeError(
+        `±${covered}bp at binStep ${binStep} needs ${reach} bins either side of ${activeId}, spanning ${span} BinArray accounts for ${poolId} — over the ${MAX_BIN_ARRAYS_PER_POOL} this reader will fetch in one call`,
+      );
+    }
 
     const discovered = await discoverBinArrays(poolId, options);
     const needed = discovered.filter((a) => a.index >= lo && a.index <= hi);

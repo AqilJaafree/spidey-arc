@@ -40,8 +40,14 @@ export function resolveRpcUrl(explicit?: string): string {
   return explicit ?? (fromEnv || DEFAULT_SOLANA_RPC);
 }
 
-/** `getMultipleAccounts` accepts at most 100 keys per call. */
-const MAX_ACCOUNTS_PER_CALL = 100;
+/**
+ * `getMultipleAccounts` accepts at most 100 keys per call.
+ *
+ * Exported because it is not only a batching detail: it is the boundary between
+ * one round trip and several, so a caller sizing a read against it — see
+ * `MAX_BIN_ARRAYS_PER_POOL` — is bounding its own fan-out, not just its payload.
+ */
+export const MAX_ACCOUNTS_PER_CALL = 100;
 
 /** `BinArray.lb_pair`, from the IDL. */
 const BIN_ARRAY_LB_PAIR_OFFSET = 24;
