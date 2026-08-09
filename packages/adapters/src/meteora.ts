@@ -447,11 +447,31 @@ export function createRpcBinSource(options: SolanaRpcOptions = {}): BinSource {
       options,
     );
 
+    // Both failures below used to `return`, skipping 70 bins each while
+    // `coveredBps` went on declaring the full width — a partial denominator
+    // published at `tick-level`, which is the flattering direction and the one
+    // failure mode this adapter exists to avoid. Throwing hands the row to
+    // `enrichWithBins`' catch, which degrades it to `unavailable`: a venue with
+    // no denominator beats a venue with a fraction of one presented as whole.
     const bins: IdentifiedBin[] = [];
     datas.forEach((bytes, i) => {
-      if (!bytes) return;
+      const want = needed[i]!;
+      if (!bytes) {
+        // `discoverBinArrays` has already proven via gPA that this account
+        // exists, so a null on the follow-up read is a failed or raced read —
+        // never zero liquidity.
+        throw new Error(
+          `bin array ${want.index} (${want.address}) of ${poolId} read back null after discovery listed it`,
+        );
+      }
       const arrayIndex = decodeBinArrayIndex(bytes);
-      if (arrayIndex !== needed[i]!.index) return; // discovery and data disagree
+      if (arrayIndex !== want.index) {
+        // Discovery and the account body disagree about which array this is:
+        // a decode inconsistency, the class `viewOf` argues must surface.
+        throw new Error(
+          `bin array ${want.address} of ${poolId} decodes index ${arrayIndex}, discovery said ${want.index}`,
+        );
+      }
       decodeBinArrayAmounts(bytes).forEach((amounts, slot) => {
         const binId = binIdOf(arrayIndex, slot);
         if (Math.abs(binId - activeId) <= reach) bins.push({ binId, ...amounts });

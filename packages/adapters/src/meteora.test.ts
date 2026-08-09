@@ -4,6 +4,7 @@ import {
   canAbsorbDeposit,
   coverageFor,
   createMeteoraAdapter,
+  createRpcBinSource,
   DEFAULT_BIN_COVERAGE_BPS,
   DEFAULT_MIN_TVL_USD,
   DEFAULT_MIN_VOLUME_24H_USD,
@@ -626,6 +627,116 @@ describe('listPools enrichment', () => {
     expect(sub.binStep).toBe(4);
     expect(sub.apyBase).toBeGreaterThan(0);
     expect(byId.get('BIG')!.activeTvlFidelity).toBe('tick-level');
+  });
+});
+
+/**
+ * `createRpcBinSource`'s failure paths, through the RPC transport seam.
+ *
+ * The recorded-chain-state suite below only ever exercises the happy path — a
+ * fixture cannot be recorded for a response the network will not produce on
+ * demand, and "the account gPA just listed reads back null" is exactly such a
+ * response. Both paths used to `return` and drop 70 bins silently while
+ * `coveredBps` declared the full width.
+ */
+describe('createRpcBinSource refuses a partial read', () => {
+  const POOL = 'POOL';
+
+  /** The six bytes the production `dataSlice` asks for: active_id, then bin_step. */
+  const lbPairSlice = (activeId: number, binStep: number): string => {
+    const buf = Buffer.alloc(6);
+    buf.writeInt32LE(activeId, 0);
+    buf.writeUInt16LE(binStep, 4);
+    return buf.toString('base64');
+  };
+
+  /** The eight bytes gPA's `dataSlice` returns: `BinArray.index`. */
+  const indexSlice = (index: bigint): string => {
+    const buf = Buffer.alloc(8);
+    buf.writeBigInt64LE(index);
+    return buf.toString('base64');
+  };
+
+  /** A whole `BinArray` account, one funded bin in slot 0. */
+  const binArrayAccount = (index: bigint, amountY: bigint): string => {
+    const buf = Buffer.alloc(10_136);
+    buf.writeBigInt64LE(index, 8);
+    buf.writeBigUInt64LE(0n, 56);
+    buf.writeBigUInt64LE(amountY, 64);
+    return buf.toString('base64');
+  };
+
+  const account = (data: string) => ({ data: [data, 'base64'], owner: 'owner' });
+
+  /**
+   * activeId 0 at a 4bp step, so `reach` is 129 and the needed array range is
+   * [-2, 1]; discovery offers only array 0, which holds bins 0..69.
+   */
+  const scripted = (arrayRead: unknown) => async (_url: string, body: unknown): Promise<unknown> => {
+    const { method, params } = body as { method: string; params: unknown[] };
+    if (method === 'getProgramAccounts') {
+      return { result: [{ pubkey: 'ARRAY', account: { data: [indexSlice(0n), 'base64'] } }] };
+    }
+    const addresses = params[0] as string[];
+    if (addresses[0] === POOL) {
+      return { result: { value: [account(lbPairSlice(0, 4))] } };
+    }
+    return arrayRead;
+  };
+
+  it('reads bins when discovery and the account agree', async () => {
+    // The control. Without it the two rejections below would pass against a
+    // source that never reads anything at all.
+    const source = createRpcBinSource({
+      transport: scripted({ result: { value: [account(binArrayAccount(0n, 100n * 10n ** 6n))] } }),
+    });
+    const reading = await source(POOL, 500);
+    expect(reading.activeId).toBe(0);
+    expect(reading.binStep).toBe(4);
+    expect(reading.coveredBps).toBe(500);
+    // 70 bins in array 0, all inside reach 129 of activeId 0.
+    expect(reading.bins).toHaveLength(70);
+    expect(reading.bins[0]).toEqual({ binId: 0, amountX: 0n, amountY: 100n * 10n ** 6n });
+  });
+
+  it('throws when an account discovery listed reads back null', async () => {
+    const source = createRpcBinSource({ transport: scripted({ result: { value: [null] } }) });
+    await expect(source(POOL, 500)).rejects.toThrow(/bin array 0 \(ARRAY\) of POOL read back null/);
+  });
+
+  it('throws when the decoded array index disagrees with discovery', async () => {
+    const source = createRpcBinSource({
+      transport: scripted({ result: { value: [account(binArrayAccount(7n, 1n))] } }),
+    });
+    await expect(source(POOL, 500)).rejects.toThrow(/decodes index 7, discovery said 0/);
+  });
+
+  it('degrades the row rather than publishing 70 bins short of the declared width', async () => {
+    // The consequence, stated where it is visible: `enrichWithBins` catches the
+    // throw, so the row loses its denominator instead of declaring ±500bp over
+    // a fraction of the bins.
+    const normalized = normalizeMeteoraPool(SOL_USDC, 1);
+    if ('skip' in normalized) throw new Error('fixture should normalize');
+    const source = createRpcBinSource({ transport: scripted({ result: { value: [null] } }) });
+
+    const [p] = await enrichWithBins([{ ...normalized, poolId: POOL }], {
+      source,
+      rows: [{ ...SOL_USDC, address: POOL }],
+    });
+    expect(p!.activeTvlFidelity).toBe('unavailable');
+    expect(p!.activeTvlUsd).toBeNull();
+    expect(p!.activeTvlDeltaBps).toBeNull();
+  });
+
+  it('throws when no discovered array falls inside the needed range', async () => {
+    const empty = async (_url: string, body: unknown): Promise<unknown> => {
+      const { method, params } = body as { method: string; params: unknown[] };
+      if (method === 'getProgramAccounts') return { result: [] };
+      return { result: { value: [account(lbPairSlice(0, 4))] } };
+    };
+    await expect(createRpcBinSource({ transport: empty })(POOL, 500)).rejects.toThrow(
+      /no bin arrays in \[-2, 1\] for POOL/,
+    );
   });
 });
 
