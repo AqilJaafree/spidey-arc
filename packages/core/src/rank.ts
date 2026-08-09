@@ -61,6 +61,27 @@ export const RANGE_WIDTH_TOLERANCE = 2;
 /** Your deposit taking more than this share of in-range liquidity is flagged. */
 export const DILUTION_FLAG_THRESHOLD = 0.2;
 
+/**
+ * The `dilutionFactor` below which a pool is excluded rather than ranked.
+ *
+ * The mirror of {@link DILUTION_FLAG_THRESHOLD}: that one warns when your
+ * deposit costs you a fifth of the headline rate, this one excludes when you
+ * would keep only a fifth of it.
+ *
+ * Set at "you would dwarf the pool", not "you would be the majority of it". At
+ * parity — a $10M deposit into an $8M range — `yourFeeApr` already halves your
+ * rate correctly, and the pool is the same order of magnitude as the deposit, so
+ * the projection is diluted rather than invented. It stops being a projection
+ * when your deposit is multiples of the range: a $10,000 deposit into $246 of
+ * in-range liquidity earns 2% of a rate that was set by volume arriving at a
+ * pool 40 times smaller than the one you just created.
+ *
+ * Deliberately deposit-relative rather than an absolute dollar floor: $500 of
+ * in-range liquidity is ample for a $10 deposit and meaningless for $10,000, and
+ * only the ratio knows which case it is looking at.
+ */
+export const DILUTION_EXCLUDE_THRESHOLD = 0.2;
+
 /** A score more than this fraction emissions gets the emissions flag. */
 export const EMISSIONS_FLAG_THRESHOLD = 0.5;
 
@@ -345,6 +366,21 @@ function scorePool(
   });
   const dilution = dilutionFactor(tDelta, depositUsd);
   if (dilution < 1 - DILUTION_FLAG_THRESHOLD) flags.push('dilution');
+
+  // Past half the range, stop projecting. `yourFeeApr` already divides your
+  // share out honestly, but the volume it divides is the volume the pool saw
+  // *before* your deposit — and there is no reason a range you now dominate
+  // keeps attracting it. Flagging this was not enough: a live scan ranked a
+  // pool holding $246 of in-range liquidity first for a $10,000 deposit,
+  // truthfully reporting that the deposit was 98% of the range while still
+  // recommending it. Same posture as `no-active-tvl`: when the model does not
+  // apply, exclude rather than report.
+  if (dilution < DILUTION_EXCLUDE_THRESHOLD) {
+    // Floored, so it never rounds up to a flat '100%' it cannot justify.
+    const yourShare = Math.floor((1 - dilution) * 100);
+    return excludedRow(pool, deltaBps, [...flags, 'dilution-dominates'],
+      `Your deposit would be ${yourShare}% of in-range liquidity at ±${deltaBps}bp, so the rate assumes volume that has no reason to arrive; excluded rather than projected.`);
+  }
 
   const poolApr = tDelta > 0 ? poolFeeApr({ volume24hUsd: vDelta, feeRate, activeTvlUsd: tDelta }) : null;
 

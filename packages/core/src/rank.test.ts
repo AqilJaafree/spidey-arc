@@ -83,11 +83,16 @@ describe('rank(A) — ranking is a function of deposit size (§7.3)', () => {
   });
 
   it('reports the dilution that caused the reorder', () => {
+    // At $10M the thin pool is not merely outranked, it is disqualified: the
+    // deposit is ~500x its in-range liquidity, so there is no rate to project.
+    // The row still has to say why, which is what this pins.
     const result = rank([thin, deep], { depositUsd: 10_000_000, now: NOW });
-    const thinRow = result.ranked.find((r) => r.poolId === 'thin');
+    expect(result.ranked.map((r) => r.poolId)).not.toContain('thin');
+    const thinRow = result.excluded.find((r) => r.poolId === 'thin');
     expect(thinRow?.flags).toContain('dilution');
-    expect(thinRow?.dilution).toBeLessThan(0.01);
+    expect(thinRow?.flags).toContain('dilution-dominates');
     expect(thinRow?.reason).toMatch(/in-range liquidity/);
+    expect(thinRow?.reason).toMatch(/99%/);
   });
 
   it('disagrees with the headline ranking — the §12 step 2 screenshot', () => {
@@ -345,6 +350,79 @@ describe('rank — data provenance travels with the number (§6)', () => {
     expect(row?.flags).not.toContain('no-hygiene-series');
     expect(row?.flags).not.toContain('current-tick-liquidity-only');
     expect(row?.flags).not.toContain('no-volatility-series');
+  });
+});
+
+describe('rank — a pool your deposit would dominate is not a pool (§7.3)', () => {
+  /**
+   * At the point where your deposit exceeds the rest of the range, the fee APR
+   * stops being a projection and becomes a fiction: it assumes the same volume
+   * keeps arriving after you multiplied the liquidity it has to share. Flagging
+   * that was not enough — a live `/compare` ranked a pool holding $246 of
+   * in-range liquidity **first** for a $10,000 deposit, correctly reporting
+   * "your deposit is 98% of in-range liquidity" while still recommending it.
+   *
+   * So this excludes, on the same grounds `no-active-tvl` excludes: when the
+   * model does not apply, report nothing rather than a number that is not real.
+   */
+  it('excludes a pool the deposit would dwarf', () => {
+    const thin = pool({ poolId: 'thin', activeTvlUsd: 1_000 });
+    const result = rank([thin], { depositUsd: 10_000, now: NOW });
+    expect(result.ranked).toHaveLength(0);
+    expect(result.excluded[0]?.flags).toContain('dilution-dominates');
+  });
+
+  it('says how much of the range you would be', () => {
+    const thin = pool({ poolId: 'thin', activeTvlUsd: 1_000 });
+    const row = rank([thin], { depositUsd: 10_000, now: NOW }).excluded[0];
+    // 10k against 1k of others is 90.9% of the range, floored to 90%.
+    expect(row?.reason).toMatch(/90%/);
+    expect(row?.reason).toMatch(/excluded rather than/i);
+  });
+
+  it('keeps a pool exactly on the threshold', () => {
+    // dilution === 0.2 exactly: you keep a fifth of the headline, which is
+    // diluted but still a projection about a market that exists.
+    const half = pool({ poolId: 'half', activeTvlUsd: 2_500 });
+    const result = rank([half], { depositUsd: 10_000, now: NOW });
+    expect(result.ranked).toHaveLength(1);
+    expect(result.ranked[0]?.flags).toContain('dilution');
+    expect(result.ranked[0]?.flags).not.toContain('dilution-dominates');
+  });
+
+  it('excludes just past the threshold', () => {
+    const past = pool({ poolId: 'past', activeTvlUsd: 2_499 });
+    expect(rank([past], { depositUsd: 10_000, now: NOW }).ranked).toHaveLength(0);
+  });
+
+  it('still reports the headline APR it is arguing against', () => {
+    // The comparison column is the point of an excluded row.
+    const thin = pool({ poolId: 'thin', activeTvlUsd: 1_000 });
+    const row = rank([thin], { depositUsd: 10_000, now: NOW }).excluded[0];
+    expect(row?.headlineAprBps).toBeGreaterThan(0);
+    expect(row?.yourAprBps).toBeNull();
+  });
+
+  it('keeps a pool at parity, where the rate is diluted rather than invented', () => {
+    // $10k into $10k of range: 50% of the liquidity, and `yourFeeApr` halves
+    // the rate honestly. Diluted, flagged, still ranked.
+    const parity = pool({ poolId: 'parity', activeTvlUsd: 10_000 });
+    const at = rank([parity], { depositUsd: 10_000, now: NOW });
+    expect(at.ranked).toHaveLength(1);
+    expect(at.ranked[0]?.flags).toContain('dilution');
+    expect(at.ranked[0]?.flags).not.toContain('dilution-dominates');
+  });
+
+  it('leaves a deep pool alone', () => {
+    const deep = pool({ poolId: 'deep', activeTvlUsd: 5_000_000 });
+    const result = rank([deep], { depositUsd: 10_000, now: NOW });
+    expect(result.ranked).toHaveLength(1);
+    expect(result.ranked[0]?.flags).not.toContain('dilution-dominates');
+    expect(result.ranked[0]?.flags).not.toContain('dilution');
+  });
+
+  it('carries a user-facing explanation', () => {
+    expect(FLAG_EXPLANATIONS['dilution-dominates']).toBeTruthy();
   });
 });
 

@@ -585,7 +585,10 @@ describe('the modelled volume band stays wider than the declared coverage', () =
     const row = await capture(SOL_USDC, async () => ({
       activeId: 0,
       binStep: 4,
-      bins: [{ binId: 0, amountX: 2n * 10n ** 9n, amountY: 50n * 10n ** 6n }],
+      // Scaled to a realistic single bin (~$202k). At the original ~$202 a
+      // $1,000 deposit would be 83% of the range, which `rank` now excludes —
+      // and these two tests are about capture and width, not about size.
+      bins: [{ binId: 0, amountX: 2_000n * 10n ** 9n, amountY: 50_000n * 10n ** 6n }],
       coveredBps: 500,
     }));
 
@@ -817,7 +820,10 @@ describe('an enriched pool survives rank()', () => {
     const [pool] = await enrich(SOL_USDC, async () => ({
       activeId: 0,
       binStep: 4,
-      bins: [{ binId: 0, amountX: 2n * 10n ** 9n, amountY: 50n * 10n ** 6n }],
+      // Scaled to a realistic single bin (~$202k). At the original ~$202 a
+      // $1,000 deposit would be 83% of the range, which `rank` now excludes —
+      // and these two tests are about capture and width, not about size.
+      bins: [{ binId: 0, amountX: 2_000n * 10n ** 9n, amountY: 50_000n * 10n ** 6n }],
       coveredBps: 500,
     }));
 

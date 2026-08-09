@@ -15,6 +15,7 @@ export type PoolFlag =
   | 'stale'
   | 'range-width-mismatch'
   | 'dilution'
+  | 'dilution-dominates'
   | 'one-whale-volume'
   | 'cost-exceeds-edge'
   | 'fails-entry-condition'
@@ -88,6 +89,7 @@ export const FLAG_LABELS: Record<PoolFlag, string> = {
   stale: 'stale data',
   'range-width-mismatch': 'range width mismatch',
   dilution: 'diluted by your size',
+  'dilution-dominates': 'too small for your size',
   'one-whale-volume': 'one-whale volume',
   'cost-exceeds-edge': 'cost exceeds edge',
   'fails-entry-condition': 'fails entry test',

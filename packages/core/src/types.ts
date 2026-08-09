@@ -192,6 +192,17 @@ export type PoolFlag =
   | 'range-width-mismatch'
   /** §7.3: your deposit materially moved the denominator. */
   | 'dilution'
+  /**
+   * §7.3, taken to its conclusion: your deposit would be *most* of the range,
+   * so the fee APR is not a projection. Excluded.
+   *
+   * Past this point the number assumes the same volume keeps arriving after you
+   * multiplied the liquidity it has to share, which is not a conservative
+   * assumption but an unfounded one. `dilution` warns; this excludes, on the
+   * same grounds as `no-active-tvl` — when the model does not apply, report
+   * nothing rather than a figure that is not real.
+   */
+  | 'dilution-dominates'
   /** §7.6: mean/median gap says this is one whale, not a market. */
   | 'one-whale-volume'
   /** §7.5: the move costs more than the edge repays at this size. */
@@ -225,6 +236,8 @@ export const FLAG_EXPLANATIONS: Record<PoolFlag, string> = {
   'range-width-mismatch':
     'In-range liquidity was measured at a different range width than the one requested.',
   dilution: 'Your deposit is a large share of in-range liquidity, so your yield is well below the headline.',
+  'dilution-dominates':
+    'Your deposit would be most of the in-range liquidity, so no meaningful rate can be projected for it.',
   'one-whale-volume': 'Volume is dominated by a few trades; the mean is far above the median.',
   'cost-exceeds-edge': 'The APR gain does not repay the cost of moving at this position size.',
   'fails-entry-condition': 'Fee yield does not clear adverse selection plus entry cost.',
