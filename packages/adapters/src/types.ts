@@ -35,6 +35,15 @@ export type AdapterResult = {
    * rather than swallowed — silent drops hide coverage gaps.
    */
   skipped: Array<{ poolId: string; reason: string }>;
+  /**
+   * Pools returned at *lower fidelity* than this adapter can reach, with why.
+   *
+   * Distinct from `skipped`: these rows are present in `pools`. They just lost
+   * something on the way — most often an in-range denominator. Without a reason,
+   * "the venue has nothing in range today" and "our RPC is refusing us" are the
+   * same output, and only one of them is worth waking up for.
+   */
+  degraded?: Array<{ poolId: string; reason: string }>;
 };
 
 export type VenueAdapter = {

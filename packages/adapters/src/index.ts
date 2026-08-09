@@ -50,6 +50,8 @@ export const ALL_ADAPTERS: VenueAdapter[] = [
 export type CollectResult = {
   pools: NormalizedPool[];
   skipped: Array<{ adapter: string; poolId: string; reason: string }>;
+  /** Rows present but at reduced fidelity, with why. See `AdapterResult.degraded`. */
+  degraded: Array<{ adapter: string; poolId: string; reason: string }>;
   /** Adapters that threw. A dead venue must not take the whole ranking down. */
   failures: Array<{ adapter: string; error: string }>;
 };
@@ -69,6 +71,7 @@ export async function collectPools(
 
   const pools: NormalizedPool[] = [];
   const skipped: CollectResult['skipped'] = [];
+  const degraded: CollectResult['degraded'] = [];
   const failures: CollectResult['failures'] = [];
 
   settled.forEach((outcome, i) => {
@@ -77,12 +80,13 @@ export async function collectPools(
       const result = outcome.value as AdapterResult;
       pools.push(...result.pools);
       skipped.push(...result.skipped.map((s) => ({ adapter: adapter.id, ...s })));
+      degraded.push(...(result.degraded ?? []).map((d) => ({ adapter: adapter.id, ...d })));
     } else {
       failures.push({ adapter: adapter.id, error: String(outcome.reason).slice(0, 300) });
     }
   });
 
-  return { pools, skipped, failures };
+  return { pools, skipped, degraded, failures };
 }
 
 export { createUniswapV3Adapter as uniswap };

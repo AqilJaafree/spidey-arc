@@ -51,6 +51,16 @@ export function createApp(options: AppOptions = {}) {
           }
         : null,
       adapterFailures: entry?.failures ?? [],
+      /**
+       * Rows that arrived at reduced fidelity, and why.
+       *
+       * `ok: true` with an empty `adapterFailures` is not the same as a healthy
+       * scan: an adapter that degrades every row still returns cleanly. Meteora
+       * loses its in-range denominator whenever the Solana RPC refuses a read,
+       * and the row it returns is byte-identical to one for a pool that genuinely
+       * has nothing in range. This is the only place that difference is visible.
+       */
+      degraded: entry?.degraded ?? [],
     });
   });
 

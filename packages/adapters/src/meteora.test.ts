@@ -851,6 +851,109 @@ describe('an enriched pool survives rank()', () => {
   });
 });
 
+describe('a degraded enrichment says so', () => {
+  /**
+   * `enrichWithBins` degrades a row to `'unavailable'` on any failure, which is
+   * right for the row and wrong for the operator: a rate-limited RPC and a pool
+   * with genuinely no funded bins produce byte-identical output. Measured live —
+   * five back-to-back scans went 8, 2, 0, 0, 0 enriched with no error, no log,
+   * and *faster* each time, because a refused read returns quickly.
+   */
+  const base = () => {
+    const r = normalizeMeteoraPool(SOL_USDC, 1);
+    if ('skip' in r) throw new Error('fixture should normalize');
+    return r;
+  };
+  const collect = () => {
+    const out: Array<{ poolId: string; reason: string }> = [];
+    return { out, onDegraded: (d: { poolId: string; reason: string }) => out.push(d) };
+  };
+
+  it('reports the underlying error when the bin read fails', async () => {
+    const { out, onDegraded } = collect();
+    await enrichWithBins([base()], {
+      source: async () => {
+        throw new Error('429 Too Many Requests');
+      },
+      rows: [SOL_USDC],
+      onDegraded,
+    });
+    expect(out).toHaveLength(1);
+    expect(out[0]!.poolId).toBe(SOL_USDC.address);
+    // The operator has to be able to tell rate limiting from an empty pool.
+    expect(out[0]!.reason).toMatch(/429 Too Many Requests/);
+  });
+
+  it('distinguishes a bin_step disagreement from a failed read', async () => {
+    const { out, onDegraded } = collect();
+    await enrichWithBins([base()], {
+      source: async () => ({ activeId: 0, binStep: 25, bins: [{ binId: 0, amountX: 1n, amountY: 1n }], coveredBps: 500 }),
+      rows: [SOL_USDC],
+      onDegraded,
+    });
+    expect(out[0]!.reason).toMatch(/bin_step/);
+    expect(out[0]!.reason).not.toMatch(/429/);
+  });
+
+  it('distinguishes a pool with no funded bins in range', async () => {
+    const { out, onDegraded } = collect();
+    await enrichWithBins([base()], {
+      source: async () => ({ activeId: 0, binStep: 4, bins: [{ binId: 0, amountX: 0n, amountY: 0n }], coveredBps: 500 }),
+      rows: [SOL_USDC],
+      onDegraded,
+    });
+    expect(out[0]!.reason).toMatch(/no funded bins/i);
+  });
+
+  it('says nothing when the read succeeds', async () => {
+    const { out, onDegraded } = collect();
+    await enrichWithBins([base()], {
+      source: async () => ({
+        activeId: 0,
+        binStep: 4,
+        bins: [{ binId: 0, amountX: 2_000n * 10n ** 9n, amountY: 50_000n * 10n ** 6n }],
+        coveredBps: 500,
+      }),
+      rows: [SOL_USDC],
+      onDegraded,
+    });
+    expect(out).toEqual([]);
+  });
+
+  it('names only the pool that failed', async () => {
+    const { out, onDegraded } = collect();
+    const other = { ...base(), poolId: 'OTHER' };
+    await enrichWithBins([base(), other], {
+      source: async (id) => {
+        if (id === 'OTHER') throw new Error('boom');
+        return {
+          activeId: 0,
+          binStep: 4,
+          bins: [{ binId: 0, amountX: 2_000n * 10n ** 9n, amountY: 50_000n * 10n ** 6n }],
+          coveredBps: 500,
+        };
+      },
+      rows: [SOL_USDC, { ...SOL_USDC, address: 'OTHER' }],
+      onDegraded,
+    });
+    expect(out.map((d) => d.poolId)).toEqual(['OTHER']);
+  });
+
+  it('surfaces it through listPools, beside skipped', async () => {
+    const adapter = createMeteoraAdapter({
+      fetchPools: async () => [SOL_USDC],
+      topK: 1,
+      binSource: async () => {
+        throw new Error('rpc down');
+      },
+    });
+    const result = await adapter.listPools({ symbols: ['USDC'], now: 1 });
+    expect(result.pools).toHaveLength(1);
+    expect(result.degraded).toHaveLength(1);
+    expect(result.degraded![0]!.reason).toMatch(/rpc down/);
+  });
+});
+
 describe('listPools enrichment', () => {
   it('enriches only the top K by fee ratio, leaving the rest at unavailable', async () => {
     const rows = [withRatio('low', 0.001), withRatio('high', 0.9)];

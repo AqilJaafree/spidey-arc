@@ -346,7 +346,9 @@ export function createMeteoraAdapter(options: MeteoraOptions = {}): VenueAdapter
         { minTvlUsd, minVolume24hUsd },
       );
 
+      const degraded: Degradation[] = [];
       const enriched = await enrichWithBins(pools, {
+        onDegraded: (d) => degraded.push(d),
         // Hazard, paid for once: stubbing `fetchPools` does not isolate a test
         // from the network, because these two lines still reach a live RPC and a
         // live REST host. A test that wants no network must pass `topK: 0`, or
@@ -361,7 +363,7 @@ export function createMeteoraAdapter(options: MeteoraOptions = {}): VenueAdapter
         coverageBps,
       });
 
-      return { pools: enriched, skipped };
+      return { pools: enriched, skipped, degraded };
     },
   };
 }
@@ -566,6 +568,16 @@ export function createOhlcvRangeSource(options: { signal?: AbortSignal } = {}): 
   };
 }
 
+/**
+ * A pool that is present but at lower fidelity than the adapter can reach, and
+ * why. The distinction matters operationally: a refused RPC and a pool with no
+ * funded bins both leave `activeTvlFidelity: 'unavailable'`, and without a reason
+ * they are indistinguishable. Measured live, five back-to-back scans degraded
+ * 8 -> 2 -> 0 enriched with no error and no log, and ran *faster* each time
+ * because a rate-limited read returns quickly.
+ */
+export type Degradation = { poolId: string; reason: string };
+
 export type EnrichOptions = {
   source: BinSource;
   /**
@@ -577,6 +589,12 @@ export type EnrichOptions = {
   /** The raw API rows whose pools should be enriched. */
   rows: readonly MeteoraPool[];
   coverageBps?: number;
+  /**
+   * Called once per pool whose enrichment degraded. A sink rather than a return
+   * value so the happy path keeps its shape, and the reasons still reach
+   * `AdapterResult.degraded` where `skipped`'s docblock says such things belong.
+   */
+  onDegraded?: (degradation: Degradation) => void;
 };
 
 /**
@@ -609,15 +627,25 @@ export async function enrichWithBins(
 
       // Issued together, resolved independently: neither read waits on the other
       // and neither rejection reaches the other's result.
+      // The reason is kept, not discarded: it is the only thing that separates a
+      // rate-limited endpoint from a pool with nothing in range.
+      const note = (reason: string): void => options.onDegraded?.({ poolId: pool.poolId, reason });
       const [reading, candles] = await Promise.all([
         options.source(pool.poolId, coverageBps).then(
           (r) => r,
-          () => null,
+          (error: unknown) => {
+            note(`bin read failed: ${error instanceof Error ? error.message : String(error)}`);
+            return null;
+          },
         ),
         options.ranges
           ? options.ranges(pool.poolId).then(
               (c) => c,
-              () => [] as MeteoraCandle[],
+              (error: unknown) => {
+                // Costs the row its observed band and p_exit, not its denominator.
+                note(`candle read failed: ${error instanceof Error ? error.message : String(error)}`);
+                return [] as MeteoraCandle[];
+              },
             )
           : Promise.resolve([] as MeteoraCandle[]),
       ]);
@@ -648,6 +676,9 @@ export async function enrichWithBins(
         // The cross-check: `bin_step` is published by the API and stored in the
         // account. If the decode is misaligned, offset 80 cannot agree by luck.
         if (pool.binStep !== undefined && reading.binStep !== pool.binStep) {
+          note(
+            `chain bin_step ${reading.binStep} disagrees with the API's ${pool.binStep} — refusing a possibly misaligned decode`,
+          );
           return withRanges(pool);
         }
 
@@ -659,12 +690,18 @@ export async function enrichWithBins(
           priceX: row.token_x.price,
           priceY: row.token_y.price,
         });
-        if (histogram.length === 0) return withRanges(pool);
+        if (histogram.length === 0) {
+          note(`no funded bins within ±${coverageFor(reading.coveredBps, reading.binStep)}bp of the active bin`);
+          return withRanges(pool);
+        }
 
         // Never narrower than one bin — see `coverageFor`.
         const declaredBps = coverageFor(reading.coveredBps, reading.binStep);
         const activeTvlUsd = activeTvlWithin(histogram, declaredBps);
-        if (!(activeTvlUsd > 0)) return withRanges(pool);
+        if (!(activeTvlUsd > 0)) {
+          note(`in-range liquidity summed to zero across ${histogram.length} funded bins`);
+          return withRanges(pool);
+        }
 
         return withRanges({
           ...pool,
@@ -680,10 +717,11 @@ export async function enrichWithBins(
           // of 24h volume — see {@link MODELLED_RANGE_FACTOR}.
           priceHistogram: modelledPriceHistogram(pool.volume24h, modelledRangeFor(declaredBps)),
         });
-      } catch {
-        // Deliberately swallowed: a decode that throws on the way out of a
-        // successful read degrades one venue's fidelity, it does not fail the
-        // scan. `collectPools` catches anything worse.
+      } catch (error) {
+        // Still swallowed — a decode that throws on the way out of a successful
+        // read degrades one venue's fidelity, it does not fail the scan, and
+        // `collectPools` catches anything worse. But it is now reported.
+        note(`bin decode failed: ${error instanceof Error ? error.message : String(error)}`);
         return withRanges(pool);
       }
     }),
