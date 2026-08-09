@@ -1,10 +1,16 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { rank } from '@spidey/core';
 import {
+  coverageFor,
   createMeteoraAdapter,
+  DEFAULT_BIN_COVERAGE_BPS,
+  enrichWithBins,
   meteoraAdapter,
   METEORA_BASE,
   normalizeMeteoraPool,
   poolsUrl,
+  topKByFeeRatio,
+  type BinSource,
   type MeteoraPool,
 } from './meteora.js';
 
@@ -213,5 +219,197 @@ describe('replaying the recorded response', () => {
     }
     // Rejections are reported, not hidden.
     for (const s of skipped) expect(s.reason).toBeTruthy();
+  });
+});
+
+const withRatio = (address: string, ratio: number): MeteoraPool => ({
+  ...SOL_USDC,
+  address,
+  fee_tvl_ratio: { '24h': ratio },
+});
+
+describe('choosing which pools get bin data', () => {
+  it('takes the highest 24h fee/TVL ratio first', () => {
+    const chosen = topKByFeeRatio([withRatio('a', 0.01), withRatio('b', 0.9), withRatio('c', 0.5)], 2);
+    expect(chosen.map((p) => p.address)).toEqual(['b', 'c']);
+  });
+
+  it('never returns more than it was asked for', () => {
+    expect(topKByFeeRatio([withRatio('a', 1)], 5)).toHaveLength(1);
+    expect(topKByFeeRatio([withRatio('a', 1), withRatio('b', 2)], 0)).toHaveLength(0);
+  });
+
+  it('treats a missing ratio as the worst, not as the best', () => {
+    const chosen = topKByFeeRatio([{ ...SOL_USDC, address: 'none', fee_tvl_ratio: {} }, withRatio('b', 0.1)], 1);
+    expect(chosen.map((p) => p.address)).toEqual(['b']);
+  });
+});
+
+describe('coverageFor', () => {
+  it('never reports coverage narrower than one bin', () => {
+    expect(coverageFor(500, 800)).toBe(800);
+    expect(coverageFor(500, 4)).toBe(500);
+  });
+});
+
+describe('enrichWithBins', () => {
+  const base = () => {
+    const r = normalizeMeteoraPool(SOL_USDC, 1);
+    if ('skip' in r) throw new Error('fixture should normalize');
+    return r;
+  };
+
+  /** One funded bin at the active id: 2 SOL plus 50 USDC at the fixture's prices. */
+  const goodSource: BinSource = async () => ({
+    activeId: 0,
+    binStep: 4,
+    bins: [{ binId: 0, amountX: 2n * 10n ** 9n, amountY: 50n * 10n ** 6n }],
+    coveredBps: 500,
+  });
+
+  /** What `histogramFromBins` must value that bin at — constant-sum, no `L`. */
+  const goodSourceUsd = 2 * SOL_USDC.token_x.price + 50 * SOL_USDC.token_y.price;
+
+  it('lifts the row to tick-level with a histogram', async () => {
+    const [p] = await enrichWithBins([base()], { source: goodSource, rows: [SOL_USDC] });
+    expect(p!.activeTvlFidelity).toBe('tick-level');
+    expect(p!.activeTvlUsd).toBeCloseTo(goodSourceUsd, 6);
+    expect(p!.activeTvlDeltaBps).toBe(500);
+    expect(p!.liquidityHistogram).toHaveLength(1);
+  });
+
+  it('asks the source for the default coverage when none is pinned', async () => {
+    const seen: number[] = [];
+    const spy: BinSource = async (id, cov) => {
+      seen.push(cov);
+      return goodSource(id, cov);
+    };
+    await enrichWithBins([base()], { source: spy, rows: [SOL_USDC] });
+    expect(seen).toEqual([DEFAULT_BIN_COVERAGE_BPS]);
+  });
+
+  it('declares the width it actually covered, so rank.ts can refuse wider questions', async () => {
+    const narrow: BinSource = async (id, cov) => ({ ...(await goodSource(id, cov)), coveredBps: 100 });
+    const [p] = await enrichWithBins([base()], { source: narrow, rows: [SOL_USDC] });
+    expect(p!.activeTvlDeltaBps).toBe(100);
+  });
+
+  it('degrades to unavailable when the RPC throws, keeping the REST row', async () => {
+    const dead: BinSource = async () => {
+      throw new Error('RPC down');
+    };
+    const [p] = await enrichWithBins([base()], { source: dead, rows: [SOL_USDC] });
+    expect(p!.activeTvlUsd).toBeNull();
+    expect(p!.activeTvlDeltaBps).toBeNull();
+    expect(p!.activeTvlFidelity).toBe('unavailable');
+    expect(p!.liquidityHistogram).toBeUndefined();
+    // The row survives — losing rankability must not lose the comparison.
+    expect(p!.tvlUsd).toBe(SOL_USDC.tvl);
+    expect(p!.binStep).toBe(4);
+  });
+
+  it('refuses bin data when the decoded bin_step disagrees with the API', async () => {
+    // A mismatch means the account decode is misaligned; a plausible-looking
+    // number from the wrong offset is worse than no number.
+    const wrong: BinSource = async (id, cov) => ({ ...(await goodSource(id, cov)), binStep: 25 });
+    const [p] = await enrichWithBins([base()], { source: wrong, rows: [SOL_USDC] });
+    expect(p!.activeTvlFidelity).toBe('unavailable');
+    expect(p!.activeTvlUsd).toBeNull();
+  });
+
+  it('degrades rather than reporting a zero denominator for an unfunded range', async () => {
+    const empty: BinSource = async (id, cov) => ({ ...(await goodSource(id, cov)), bins: [] });
+    const [p] = await enrichWithBins([base()], { source: empty, rows: [SOL_USDC] });
+    expect(p!.activeTvlUsd).toBeNull();
+    expect(p!.activeTvlFidelity).toBe('unavailable');
+  });
+
+  it('never declares coverage narrower than one bin', async () => {
+    // Otherwise `resolveDeltaBps` clamps δ up to binStep, overshoots the
+    // declared width, and rank.ts excludes the pool — invisibly.
+    const coarse: BinSource = async () => ({
+      activeId: 0,
+      binStep: 800,
+      bins: [{ binId: 0, amountX: 0n, amountY: 100n * 10n ** 6n }],
+      coveredBps: 500,
+    });
+    const row = { ...SOL_USDC, pool_config: { bin_step: 800, base_fee_pct: 0.04, max_fee_pct: 0 } };
+    const normalized = normalizeMeteoraPool(row, 1);
+    if ('skip' in normalized) throw new Error('fixture should normalize');
+    const [p] = await enrichWithBins([normalized], { source: coarse, rows: [row] });
+    expect(p!.activeTvlDeltaBps).toBe(800);
+    expect(p!.activeTvlFidelity).toBe('tick-level');
+  });
+
+  it('leaves pools it was not given bin data for untouched', async () => {
+    const other = { ...base(), poolId: 'OTHER' };
+    const [p] = await enrichWithBins([other], { source: goodSource, rows: [] });
+    expect(p!.activeTvlFidelity).toBe('unavailable');
+  });
+
+  it('does not let one failing pool deny the others their denominator', async () => {
+    // Enrichment is per-pool, not all-or-nothing: a single dead account read
+    // must not cost every other venue in the batch its rankability.
+    const rows = [SOL_USDC, { ...SOL_USDC, address: 'BROKEN' }];
+    const flaky: BinSource = async (poolId, cov) => {
+      if (poolId === 'BROKEN') throw new Error('RPC down for this one');
+      return goodSource(poolId, cov);
+    };
+    const pools = rows.map((row) => {
+      const r = normalizeMeteoraPool(row, 1);
+      if ('skip' in r) throw new Error('fixture should normalize');
+      return r;
+    });
+
+    const enriched = await enrichWithBins(pools, { source: flaky, rows });
+    expect(enriched.map((p) => p.activeTvlFidelity)).toEqual(['tick-level', 'unavailable']);
+    expect(enriched[1]!.tvlUsd).toBe(SOL_USDC.tvl);
+  });
+});
+
+/**
+ * The end-to-end claim: an enriched row is actually rankable.
+ *
+ * Everything above asserts the shape of the row. Only `rank()` asserts that the
+ * shape is the one `othersLiquidityInRange` accepts — and the coverage guard
+ * there fails *silently*, by moving a pool into `excluded`, so nothing short of
+ * running the ranker catches a δ that overshoots the declared width.
+ */
+describe('an enriched pool survives rank()', () => {
+  const enrich = async (row: MeteoraPool, source: BinSource) => {
+    const r = normalizeMeteoraPool(row, 1);
+    if ('skip' in r) throw new Error('fixture should normalize');
+    return enrichWithBins([r], { source, rows: [row] });
+  };
+
+  it('ranks a 4bp pool instead of excluding it on range width', async () => {
+    const [pool] = await enrich(SOL_USDC, async () => ({
+      activeId: 0,
+      binStep: 4,
+      bins: [{ binId: 0, amountX: 2n * 10n ** 9n, amountY: 50n * 10n ** 6n }],
+      coveredBps: 500,
+    }));
+
+    const result = rank([pool!], { depositUsd: 1_000, now: 1 });
+    expect(result.ranked.map((r) => r.poolId)).toEqual([SOL_USDC.address]);
+    expect(result.excluded).toHaveLength(0);
+    // Evaluated at the width the bins actually covered, not the 10bp default.
+    expect(result.ranked[0]!.deltaBps).toBe(500);
+  });
+
+  it('ranks a pool whose bin is coarser than the coverage it asked for', async () => {
+    // The failure `coverageFor` exists to prevent: δ clamps up to binStep 800,
+    // and a row declaring 500 would be excluded on `range-width-mismatch`.
+    const row = { ...SOL_USDC, pool_config: { bin_step: 800, base_fee_pct: 0.04, max_fee_pct: 0 } };
+    const [pool] = await enrich(row, async () => ({
+      activeId: 0,
+      binStep: 800,
+      bins: [{ binId: 0, amountX: 0n, amountY: 100_000n * 10n ** 6n }],
+      coveredBps: 500,
+    }));
+
+    const result = rank([pool!], { depositUsd: 1_000, now: 1 });
+    expect(result.excluded.flatMap((r) => r.flags)).not.toContain('range-width-mismatch');
+    expect(result.ranked.map((r) => r.poolId)).toEqual([row.address]);
   });
 });

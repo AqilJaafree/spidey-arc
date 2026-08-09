@@ -19,7 +19,22 @@
 
 import type { NormalizedPool } from '@spidey/core';
 import { getJson } from './http.js';
+import {
+  activeTvlWithin,
+  arrayIndexOf,
+  binIdOf,
+  binsNeededFor,
+  decodeBinArrayAmounts,
+  decodeBinArrayIndex,
+  histogramFromBins,
+  type IdentifiedBin,
+} from './meteoraBins.js';
 import { modelledPriceHistogram } from './series.js';
+import {
+  discoverBinArrays,
+  getMultipleAccounts,
+  type SolanaRpcOptions,
+} from './solanaRpc.js';
 import {
   isUsdLikeSymbol,
   type AdapterContext,
@@ -198,3 +213,162 @@ export function createMeteoraAdapter(options: MeteoraOptions = {}): VenueAdapter
 }
 
 export const meteoraAdapter: VenueAdapter = createMeteoraAdapter();
+
+/**
+ * Half-width the bin reader aims to cover, bps.
+ *
+ * Wider than `DEFAULT_RANGE_DELTA_BPS` (10) and wider than anything the
+ * planner pins, so the coverage guard in `othersLiquidityInRange` stays quiet
+ * in normal operation while the fetch stays bounded: 122 bins either side at
+ * `binStep = 4`, which spans at most five `BinArray` accounts.
+ */
+export const DEFAULT_BIN_COVERAGE_BPS = 500;
+
+/** Pools enriched with bin data per scan. */
+export const DEFAULT_TOP_K = 8;
+
+/**
+ * Coverage can never be narrower than one bin.
+ *
+ * `resolveDeltaBps` clamps an unpinned δ up to `venueGranularityBps`, which for
+ * a DLMM pool is `binStep`. So a pool whose declared coverage is below its own
+ * bin step gets asked a question wider than it answered, and the coverage guard
+ * excludes it on `range-width-mismatch` — the venue would silently drop out of
+ * the ranking for having a coarse bin. The widest `bin_step` observed live is
+ * 400 against a 500bp default, so nothing hits this today; it is one
+ * coarser-binned pool away from mattering, and it fails invisibly.
+ */
+export const coverageFor = (coverageBps: number, binStep: number): number =>
+  Math.max(coverageBps, binStep);
+
+export type BinReading = {
+  activeId: number;
+  binStep: number;
+  bins: IdentifiedBin[];
+  /** The width the fetched arrays actually cover, bps. */
+  coveredBps: number;
+};
+
+export type BinSource = (poolId: string, coverageBps: number) => Promise<BinReading>;
+
+/**
+ * Highest 24h fee/TVL ratio first — the pools most worth a denominator.
+ *
+ * A missing ratio sorts last rather than first: an unmeasured pool must not
+ * win the enrichment budget over a measured one.
+ */
+export function topKByFeeRatio(rows: readonly MeteoraPool[], k: number): MeteoraPool[] {
+  return [...rows]
+    .sort((a, b) => (b.fee_tvl_ratio?.['24h'] ?? 0) - (a.fee_tvl_ratio?.['24h'] ?? 0))
+    .slice(0, Math.max(0, k));
+}
+
+export type EnrichOptions = {
+  source: BinSource;
+  /** The raw API rows whose pools should be enriched. */
+  rows: readonly MeteoraPool[];
+  coverageBps?: number;
+};
+
+/**
+ * Attach a real in-range denominator to the pools named in `options.rows`.
+ *
+ * Every failure lands in the same place — `activeTvlUsd: null`,
+ * `activeTvlFidelity: 'unavailable'`, REST fields intact. The RPC dependency
+ * can cost a venue its rankability; it must never cost it its row, and it must
+ * never produce a zero denominator, which would divide into the scoring maths
+ * as a measurement of an empty pool.
+ */
+export async function enrichWithBins(
+  pools: readonly NormalizedPool[],
+  options: EnrichOptions,
+): Promise<NormalizedPool[]> {
+  const coverageBps = options.coverageBps ?? DEFAULT_BIN_COVERAGE_BPS;
+  const wanted = new Map(options.rows.map((r) => [r.address, r]));
+
+  return Promise.all(
+    pools.map(async (pool) => {
+      const row = wanted.get(pool.poolId);
+      if (!row) return pool;
+
+      try {
+        const reading = await options.source(pool.poolId, coverageBps);
+
+        // The cross-check: `bin_step` is published by the API and stored in the
+        // account. If the decode is misaligned, offset 80 cannot agree by luck.
+        if (pool.binStep !== undefined && reading.binStep !== pool.binStep) {
+          return pool;
+        }
+
+        const histogram = histogramFromBins(reading.bins, {
+          activeId: reading.activeId,
+          binStep: reading.binStep,
+          decimalsX: row.token_x.decimals,
+          decimalsY: row.token_y.decimals,
+          priceX: row.token_x.price,
+          priceY: row.token_y.price,
+        });
+        if (histogram.length === 0) return pool;
+
+        // Never narrower than one bin — see `coverageFor`.
+        const declaredBps = coverageFor(reading.coveredBps, reading.binStep);
+        const activeTvlUsd = activeTvlWithin(histogram, declaredBps);
+        if (!(activeTvlUsd > 0)) return pool;
+
+        return {
+          ...pool,
+          activeTvlUsd,
+          activeTvlDeltaBps: declaredBps,
+          activeTvlFidelity: 'tick-level' as const,
+          liquidityHistogram: histogram,
+        };
+      } catch {
+        // Deliberately swallowed: a dead RPC degrades one venue's fidelity, it
+        // does not fail the scan. `collectPools` catches anything worse.
+        return pool;
+      }
+    }),
+  );
+}
+
+/** The production {@link BinSource}: two account reads and one filtered scan. */
+export function createRpcBinSource(options: SolanaRpcOptions = {}): BinSource {
+  return async (poolId, coverageBps) => {
+    const [pairBytes] = await getMultipleAccounts([poolId], {
+      ...options,
+      // active_id @76 and bin_step @80 — six bytes out of 904.
+      dataSlice: { offset: 76, length: 6 },
+    });
+    if (!pairBytes || pairBytes.length !== 6) throw new Error(`no LbPair account for ${poolId}`);
+    const view = new DataView(pairBytes.buffer, pairBytes.byteOffset, pairBytes.byteLength);
+    const activeId = view.getInt32(0, true);
+    const binStep = view.getUint16(4, true);
+
+    const covered = coverageFor(coverageBps, binStep);
+    const reach = binsNeededFor(covered, binStep);
+    const lo = arrayIndexOf(activeId - reach);
+    const hi = arrayIndexOf(activeId + reach);
+
+    const discovered = await discoverBinArrays(poolId, options);
+    const needed = discovered.filter((a) => a.index >= lo && a.index <= hi);
+    if (needed.length === 0) throw new Error(`no bin arrays in [${lo}, ${hi}] for ${poolId}`);
+
+    const datas = await getMultipleAccounts(
+      needed.map((a) => a.address),
+      options,
+    );
+
+    const bins: IdentifiedBin[] = [];
+    datas.forEach((bytes, i) => {
+      if (!bytes) return;
+      const arrayIndex = decodeBinArrayIndex(bytes);
+      if (arrayIndex !== needed[i]!.index) return; // discovery and data disagree
+      decodeBinArrayAmounts(bytes).forEach((amounts, slot) => {
+        const binId = binIdOf(arrayIndex, slot);
+        if (Math.abs(binId - activeId) <= reach) bins.push({ binId, ...amounts });
+      });
+    });
+
+    return { activeId, binStep, bins, coveredBps: covered };
+  };
+}
