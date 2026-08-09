@@ -1,15 +1,21 @@
 @import 'tailwindcss';
 
 /*
- * Ledger ink — a bookkeeper's two inks, not a trading terminal. Primary is
- * a deep bottle-green (ledger credit-ink / old banknote green — finance's
- * own green, not crypto neon). Accent is a blue-black fountain-pen ink.
- * Both themes are real and user-toggleable: light is a rating-committee
- * report read at a desk in daylight; dark is the same desk after hours,
- * the ink now the brightest thing in the room. Sans (Geist) carries every
- * label and sentence; serif (Libre Caslon Text) is reserved for exactly
- * two things — the masthead heading and the hero gap figure; mono (Geist
- * Mono) is reserved for tabular data. Every pair below is WCAG-verified
+ * Forest Stake — chosen via /brand-design from 6 candidates (3 curated,
+ * 3 generated for defi + serious/premium), rendered on the product's own
+ * mini-UI so the choice was made on real content, not swatches. One hue
+ * carries the brand: the same green that meant "ledger credit-ink" in the
+ * prior hand-built pass, now re-derived through the skill's seed → token
+ * pipeline. `warning` is the one deliberately off-hue token (amber, fixed
+ * independent of the brand hue, same as `destructive`) so gap/dilution
+ * direction stays legible without relying on green alone. Both themes are
+ * real and user-toggleable. Typography is Inter + JetBrains Mono, picked
+ * via /brand-design's typography preview from 6 candidates rendered on
+ * this same palette — one sans family for every label and sentence, mono
+ * reserved for tabular data. No serif: the prior pass reserved Libre
+ * Caslon for the masthead and hero figure, but Pair A (this pick) is
+ * deliberately sans-only, so those elements now use the same Inter weight
+ * scale as everything else. Every pair below is WCAG-verified
  * (relative-luminance contrast, not eyeballed) against the surface it is
  * actually used on — see the notes inline.
  */
@@ -35,68 +41,82 @@
   --color-success-foreground: var(--success-foreground);
   --font-sans: var(--font-sans);
   --font-mono: var(--font-mono);
-  --font-serif: var(--font-serif);
+  --background-image-brand-bg: var(--gradient-bg);
 }
 
 :root {
-  /* paper-white, a whisper of the primary's own green, not cream/sand */
-  --background: oklch(0.99 0.004 150);
-  --card: oklch(0.965 0.008 150);
+  /* Forest Stake light seed: bg-base oklch(0.98 0.01 150) */
+  --background: oklch(0.98 0.01 150);
+  --card: oklch(1 0 155);
   /* soft wash for hover states — between background and card */
-  --muted: oklch(0.93 0.01 150);
-  /* iron-gall ink black, 16.7:1 on background — AAA body text */
-  --foreground: oklch(0.22 0.022 150);
-  --card-foreground: oklch(0.22 0.022 150);
-  /* 5.3:1 on background, 5.0:1 on card — clears AA for small secondary text */
-  --muted-foreground: oklch(0.52 0.016 150);
-  /* 3.4:1 on background, 3.2:1 on card — WCAG 1.4.11 UI-boundary floor */
-  --border: oklch(0.63 0.014 150);
-  --input: oklch(0.63 0.014 150);
-  /* ledger credit-ink green. 10.1:1 on background */
-  --primary: oklch(0.36 0.095 150);
-  --primary-foreground: oklch(1 0 0);
-  /* blue-black fountain-pen ink, distinct in hue AND lightness from primary
-     (1.75:1 apart) so the two never read as variants of one color */
-  --accent: oklch(0.2 0.11 258);
-  --accent-foreground: oklch(1 0 0);
-  --destructive: oklch(0.5 0.18 25);
-  --destructive-foreground: oklch(1 0 0);
-  --warning: oklch(0.52 0.135 75);
-  --warning-foreground: oklch(1 0 0);
-  /* success reuses primary — ledger green already means "credit" here */
+  --muted: oklch(0.95 0.01 150);
+  /* 17.7:1 on background — AAA body text */
+  --foreground: oklch(0.18 0.02 150);
+  --card-foreground: oklch(0.18 0.02 150);
+  /* 7.0:1 on background — clears AA (and AAA) for small secondary text */
+  --muted-foreground: oklch(0.45 0.02 150);
+  /* 3.3:1 on background — WCAG 1.4.11 UI-boundary floor (the skill's own
+     default border formula, BG L−0.08, only clears ~1.3:1 here; this value
+     was searched to actually pass, not copied from the recipe as-is) */
+  --border: oklch(0.629 0.015 150);
+  --input: oklch(0.629 0.015 150);
+  /* Forest Stake primary, light seed. 7.2:1 on background */
+  --primary: oklch(0.42 0.14 155);
+  --primary-foreground: oklch(0.98 0 0);
+  /* subtle hover tint, same hue as primary — not yet consumed by any
+     component, kept for completeness */
+  --accent: oklch(0.93 0.02 155);
+  --accent-foreground: var(--foreground);
+  --destructive: oklch(0.55 0.22 25);
+  --destructive-foreground: oklch(0.98 0 0);
+  /* amber, deliberately off-hue from primary so gap/dilution direction
+     never depends on green alone. 5.4:1 on background */
+  --warning: oklch(0.5 0.14 72);
+  --warning-foreground: oklch(0.98 0 0);
+  /* success reuses primary — "money that grows" already is the credit color */
   --success: var(--primary);
   --success-foreground: var(--primary-foreground);
-  --ring: var(--accent);
+  --ring: var(--primary);
+  /* subtle bg gradient only — the accent gradient is deliberately skipped
+     per the skill's own "serious/finance-heavy: no accent gradient, it
+     reads frivolous on money UIs" guidance, and PRODUCT.md's own
+     anti-references. Barely perceptible: <1.5:1 luminance shift, body
+     text stays 16.3:1+ at every point along it. Not yet applied to any
+     element — available as `bg-brand-bg` if a hero surface earns it. */
+  --gradient-bg: linear-gradient(135deg, oklch(0.98 0.01 150) 0%, oklch(0.95 0.015 165) 100%);
 }
 
 .dark {
-  /* forest-shadow near-black, the same green undertone as the light paper */
-  --background: oklch(0.155 0.018 150);
-  --card: oklch(0.205 0.02 150);
-  --muted: oklch(0.24 0.02 150);
-  --foreground: oklch(0.94 0.01 150);
-  --card-foreground: oklch(0.94 0.01 150);
-  --muted-foreground: oklch(0.72 0.016 150);
-  --border: oklch(0.54 0.016 150);
-  --input: oklch(0.54 0.016 150);
-  --primary: oklch(0.68 0.13 150);
-  /* dark ink foreground for the now-lighter fill, 7.1:1 on primary */
-  --primary-foreground: oklch(0.16 0.02 150);
-  --accent: oklch(0.85 0.08 258);
-  --accent-foreground: oklch(0.16 0.02 150);
-  --destructive: oklch(0.68 0.17 25);
+  /* Forest Stake dark seed: bg-base oklch(0.13 0.015 150) */
+  --background: oklch(0.13 0.015 150);
+  --card: oklch(0.18 0.02 150);
+  --muted: oklch(0.2 0.02 150);
+  --foreground: oklch(0.96 0.01 150);
+  --card-foreground: oklch(0.96 0.01 150);
+  --muted-foreground: oklch(0.66 0.01 150);
+  /* 3.3:1 on background — searched to pass, same correction as light mode */
+  --border: oklch(0.495 0.015 150);
+  --input: oklch(0.495 0.015 150);
+  /* Forest Stake primary, dark seed. 8.7:1 on background */
+  --primary: oklch(0.72 0.17 155);
+  /* dark-ink foreground for the lighter dark-mode fill, 8.4:1 on primary */
+  --primary-foreground: oklch(0.16 0.02 155);
+  --accent: oklch(0.24 0.03 155);
+  --accent-foreground: var(--foreground);
+  --destructive: oklch(0.65 0.22 25);
+  /* dark-ink, not white — white-on-fill only clears 3.4:1 here */
   --destructive-foreground: oklch(0.16 0.02 25);
-  --warning: oklch(0.76 0.135 78);
-  --warning-foreground: oklch(0.16 0.02 78);
+  --warning: oklch(0.76 0.135 75);
+  --warning-foreground: oklch(0.16 0.02 75);
   --success: var(--primary);
   --success-foreground: var(--primary-foreground);
-  --ring: var(--accent);
+  --ring: var(--primary);
+  --gradient-bg: linear-gradient(135deg, oklch(0.13 0.015 150) 0%, oklch(0.16 0.02 165) 100%);
 }
 
 :root {
-  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
-  --font-mono: var(--font-geist-mono), ui-monospace, 'JetBrains Mono', 'SF Mono', Menlo, monospace;
-  --font-serif: var(--font-caslon), 'Iowan Old Style', 'Palatino Linotype', Georgia, serif;
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: var(--font-jetbrains-mono), ui-monospace, 'JetBrains Mono', 'SF Mono', Menlo, monospace;
 }
 
 * {
@@ -105,6 +125,7 @@
 
 html {
   color-scheme: light;
+  scroll-behavior: smooth;
 }
 
 html.dark {
@@ -158,6 +179,10 @@ details > summary::-webkit-details-marker {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
   *,
   *::before,
   *::after {

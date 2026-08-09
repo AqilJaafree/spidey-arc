@@ -26,9 +26,6 @@ importers:
       '@spidey/core':
         specifier: workspace:*
         version: link:../../packages/core
-      geist:
-        specifier: ^1.7.2
-        version: 1.7.2(next@15.5.22(react-dom@19.2.8(react@19.2.8))(react@19.2.8))
       lucide-react:
         specifier: ^0.468.0
         version: 0.468.0(react@19.2.8)
@@ -1265,11 +1262,6 @@ packages:
     resolution: {integrity: sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw==}
     engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
     os: [darwin]
-
-  geist@1.7.2:
-    resolution: {integrity: sha512-Gu5lDFa3pLRyoBlBPf0QIFHVdWAnpco7fS1bJm41jyLPFoguBgiubseUN2oLXMgqZ7uxAxDoXcHMhCY/fOTTgg==}
-    peerDependencies:
-      next: '>=13.2.0'
 
   graceful-fs@4.2.11:
     resolution: {integrity: sha512-RbJ5/jmFcNNCcDV5o9eTnBLJ/HszWV0P73bc+Ff4nS/rJj+YaS6IGyiOL0VoBYX+l1Wrl3k63h/KrH+nhJ0XvQ==}
@@ -2936,10 +2928,6 @@ snapshots:
 
   fsevents@2.3.3:
     optional: true
-
-  geist@1.7.2(next@15.5.22(react-dom@19.2.8(react@19.2.8))(react@19.2.8)):
-    dependencies:
-      next: 15.5.22(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
 
   graceful-fs@4.2.11: {}
 
