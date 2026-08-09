@@ -172,10 +172,12 @@ details > summary::-webkit-details-marker {
    ordinary hovers/focus never carry this cost. See ThemeToggle. */
 .theme-transitioning,
 .theme-transitioning * {
+  /* A plain crossfade reads best on a neutral, non-bouncy curve — the
+     ease-out-quart used for motion elsewhere is too front-loaded here. */
   transition:
-    background-color 200ms cubic-bezier(0.23, 1, 0.32, 1),
-    border-color 200ms cubic-bezier(0.23, 1, 0.32, 1),
-    color 200ms cubic-bezier(0.23, 1, 0.32, 1) !important;
+    background-color 200ms cubic-bezier(0.4, 0, 0.2, 1),
+    border-color 200ms cubic-bezier(0.4, 0, 0.2, 1),
+    color 200ms cubic-bezier(0.4, 0, 0.2, 1) !important;
 }
 
 @media (prefers-reduced-motion: reduce) {

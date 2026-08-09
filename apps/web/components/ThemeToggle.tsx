@@ -19,7 +19,11 @@ export function ThemeToggle() {
     const root = document.documentElement;
     root.classList.add('theme-transitioning');
     setTheme(resolvedTheme === 'dark' ? 'light' : 'dark');
-    window.setTimeout(() => root.classList.remove('theme-transitioning'), 220);
+    // Generous margin past the 200ms CSS duration — next-themes applies the
+    // class swap in an effect, not synchronously, so cutting this close (the
+    // previous 220ms) could clip the transition mid-flight on slower paints,
+    // which reads as elements changing out of sync rather than together.
+    window.setTimeout(() => root.classList.remove('theme-transitioning'), 400);
   };
 
   return (
