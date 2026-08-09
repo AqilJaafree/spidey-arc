@@ -24,7 +24,7 @@ export function Flag({ flag }: { flag: PoolFlag }) {
 
   return (
     <span
-      className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs whitespace-nowrap ${tone}`}
+      className={`inline-flex items-center rounded-sm border px-2 py-0.5 font-mono text-[0.6875rem] tracking-wide whitespace-nowrap uppercase ${tone}`}
     >
       {FLAG_LABELS[flag] ?? flag}
     </span>

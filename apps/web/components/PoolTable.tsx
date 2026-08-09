@@ -1,130 +1,203 @@
 import { PROVENANCE_FLAGS, type CompareRow } from '@/lib/api';
-import { aprFromBps, gapInPoints, percentFromFraction, usdCompact } from '@/lib/format';
+import { aprFromBps, gapInPoints, gapTone, percentFromFraction, usdCompact } from '@/lib/format';
 import { Flag } from './Flag';
 
 /**
  * The comparison table. Two APR columns sit next to each other on purpose:
  * the left is what a dashboard prints, the right is what this deposit
- * actually earns. The gap between them is the product.
+ * actually earns. The gap between them is the product, so it carries real
+ * visual weight here rather than column parity with TVL/In range.
+ *
+ * Below `lg` there isn't room for all 7 columns without a horizontal-scroll
+ * affordance nobody notices, so a separate list layout takes over: Pool /
+ * Your APR / Why stay visible, Headline APR / TVL / In range move into a
+ * per-row disclosure instead of scrolling off-screen unannounced.
  */
 export function PoolTable({ rows }: { rows: CompareRow[] }) {
   return (
-    <div className="overflow-x-auto rounded-xl border border-border">
-      <table className="w-full min-w-[52rem] text-sm">
-        <caption className="sr-only">
-          USDC LP venues, showing headline APR against the APR for your deposit size
-        </caption>
-        <thead>
-          <tr className="border-b border-border bg-muted/50 text-left">
-            <th scope="col" className="px-4 py-3 font-medium">
-              Pool
-            </th>
-            <th scope="col" className="px-4 py-3 text-right font-medium text-muted-foreground">
-              Headline APR
-            </th>
-            <th scope="col" className="px-4 py-3 text-right font-medium">
-              Your APR
-            </th>
-            <th scope="col" className="px-4 py-3 text-right font-medium text-muted-foreground">
-              Gap
-            </th>
-            <th scope="col" className="px-4 py-3 text-right font-medium text-muted-foreground">
-              TVL
-            </th>
-            <th scope="col" className="px-4 py-3 text-right font-medium text-muted-foreground">
-              In range
-            </th>
-            <th scope="col" className="px-4 py-3 font-medium">
-              Why
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => (
-            <tr
-              key={row.poolId}
-              className={`border-b border-border last:border-0 ${row.excluded ? 'opacity-60' : ''}`}
-            >
-              <td className="px-4 py-3">
-                <div className="font-medium">{row.pair.join(' / ')}</div>
-                <div className="text-xs text-muted-foreground">
-                  {row.dex} · {row.chain} · ±{row.deltaBps}bp
-                </div>
-              </td>
+    <>
+      <div className="hidden overflow-x-auto rounded border border-border lg:block">
+        <table className="w-full min-w-[52rem] text-sm">
+          <caption className="sr-only">
+            USDC LP venues, showing headline APR against the APR for your deposit size
+          </caption>
+          <thead>
+            <tr className="border-b border-border bg-muted/50 text-left">
+              <th scope="col" className="px-4 py-3 text-xs font-medium tracking-wide uppercase">
+                Pool
+              </th>
+              <th
+                scope="col"
+                className="px-4 py-3 text-right text-xs font-medium tracking-wide text-muted-foreground uppercase"
+              >
+                Headline APR
+              </th>
+              <th scope="col" className="px-4 py-3 text-right text-xs font-medium tracking-wide uppercase">
+                Your APR
+              </th>
+              <th scope="col" className="px-4 py-3 text-right text-xs font-medium tracking-wide uppercase">
+                Gap
+              </th>
+              <th
+                scope="col"
+                className="px-4 py-3 text-right text-xs font-medium tracking-wide text-muted-foreground uppercase"
+              >
+                TVL
+              </th>
+              <th
+                scope="col"
+                className="px-4 py-3 text-right text-xs font-medium tracking-wide text-muted-foreground uppercase"
+              >
+                In range
+              </th>
+              <th scope="col" className="px-4 py-3 text-xs font-medium tracking-wide uppercase">
+                Why
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => {
+              const gap = row.excluded ? null : gapInPoints(row.headlineAprBps, row.yourAprBps);
+              return (
+                <tr
+                  key={row.poolId}
+                  className={`border-b border-border last:border-0 ${row.excluded ? 'opacity-60' : ''}`}
+                >
+                  <td className="px-4 py-3">
+                    <div className="font-medium">{row.pair.join(' / ')}</div>
+                    <div className="text-xs text-muted-foreground">
+                      {row.dex} · {row.chain} · ±{row.deltaBps}bp
+                    </div>
+                  </td>
 
-              <td className="tabular px-4 py-3 text-right text-muted-foreground">
-                {aprFromBps(row.headlineAprBps)}
-              </td>
+                  <td className="tabular px-4 py-3 text-right text-muted-foreground">
+                    {aprFromBps(row.headlineAprBps)}
+                  </td>
 
-              <td className="tabular px-4 py-3 text-right">
+                  <td className="tabular px-4 py-3 text-right">
+                    {row.excluded ? (
+                      <span className="text-xs tracking-wide text-muted-foreground uppercase">
+                        excluded
+                      </span>
+                    ) : (
+                      <span className="text-base font-semibold text-primary">
+                        {aprFromBps(row.yourAprBps)}
+                      </span>
+                    )}
+                  </td>
+
+                  <td className="tabular px-4 py-3 text-right">
+                    {gap === null ? (
+                      <span className="text-muted-foreground">—</span>
+                    ) : (
+                      <span className={`font-semibold ${gapTone(gap.direction)}`}>{gap.label}</span>
+                    )}
+                  </td>
+
+                  <td className="tabular px-4 py-3 text-right text-muted-foreground">
+                    {usdCompact(row.tvlUsd)}
+                  </td>
+
+                  <td className="tabular px-4 py-3 text-right">
+                    {row.activeTvlUsd === null ? (
+                      <span className="text-muted-foreground">—</span>
+                    ) : (
+                      <>
+                        <div>{usdCompact(row.activeTvlUsd)}</div>
+                        <div className="text-xs text-muted-foreground">
+                          {percentFromFraction(row.activeTvlShare)} of TVL
+                        </div>
+                      </>
+                    )}
+                  </td>
+
+                  <td className="max-w-md px-4 py-3">
+                    <p className="text-xs leading-relaxed text-muted-foreground">{row.reason}</p>
+                    <div className="mt-1.5 flex flex-wrap gap-1">
+                      {row.flags
+                        .filter((f) => !PROVENANCE_FLAGS.has(f))
+                        .map((flag) => (
+                          <Flag key={flag} flag={flag} />
+                        ))}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <ul className="divide-y divide-border rounded border border-border lg:hidden">
+        {rows.map((row) => {
+          const gap = row.excluded ? null : gapInPoints(row.headlineAprBps, row.yourAprBps);
+          return (
+            <li key={row.poolId} className={`p-4 ${row.excluded ? 'opacity-60' : ''}`}>
+              <div className="font-medium">{row.pair.join(' / ')}</div>
+              <div className="text-xs text-muted-foreground">
+                {row.dex} · {row.chain} · ±{row.deltaBps}bp
+              </div>
+
+              <div className="tabular mt-2 flex items-baseline gap-2">
                 {row.excluded ? (
-                  <span className="text-xs tracking-wide text-muted-foreground uppercase">
-                    excluded
-                  </span>
-                ) : (
-                  <span className="text-base font-semibold">{aprFromBps(row.yourAprBps)}</span>
-                )}
-              </td>
-
-              <td className="tabular px-4 py-3 text-right">
-                {(() => {
-                  const gap = row.excluded ? null : gapInPoints(row.headlineAprBps, row.yourAprBps);
-                  if (gap === null) return <span className="text-muted-foreground">—</span>;
-                  const tone =
-                    gap.direction === 'below'
-                      ? 'text-warning'
-                      : gap.direction === 'above'
-                        ? 'text-success'
-                        : 'text-muted-foreground';
-                  return <span className={tone}>{gap.label}</span>;
-                })()}
-              </td>
-
-              <td className="tabular px-4 py-3 text-right text-muted-foreground">
-                {usdCompact(row.tvlUsd)}
-              </td>
-
-              <td className="tabular px-4 py-3 text-right">
-                {row.activeTvlUsd === null ? (
-                  <span className="text-muted-foreground">—</span>
+                  <span className="text-xs tracking-wide text-muted-foreground uppercase">excluded</span>
                 ) : (
                   <>
-                    <div>{usdCompact(row.activeTvlUsd)}</div>
-                    <div className="text-xs text-muted-foreground">
-                      {percentFromFraction(row.activeTvlShare)} of TVL
-                    </div>
+                    <span className="text-xl font-semibold text-primary">{aprFromBps(row.yourAprBps)}</span>
+                    {gap && (
+                      <span className={`text-sm font-medium ${gapTone(gap.direction)}`}>{gap.label}</span>
+                    )}
                   </>
                 )}
-              </td>
+              </div>
 
-              <td className="max-w-md px-4 py-3">
-                <p className="text-xs leading-relaxed text-muted-foreground">{row.reason}</p>
-                <div className="mt-1.5 flex flex-wrap gap-1">
-                  {row.flags
-                    .filter((f) => !PROVENANCE_FLAGS.has(f))
-                    .map((flag) => (
-                      <Flag key={flag} flag={flag} />
-                    ))}
-                </div>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+              <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{row.reason}</p>
+              <div className="mt-1.5 flex flex-wrap gap-1">
+                {row.flags
+                  .filter((f) => !PROVENANCE_FLAGS.has(f))
+                  .map((flag) => (
+                    <Flag key={flag} flag={flag} />
+                  ))}
+              </div>
+
+              <details className="mt-3 text-xs">
+                <summary className="inline-flex min-h-11 items-center text-muted-foreground underline decoration-border underline-offset-4 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background focus-visible:outline-none">
+                  Headline APR, TVL, in-range detail
+                </summary>
+                <dl className="tabular mt-2 grid grid-cols-2 gap-x-4 gap-y-1.5 border-t border-border pt-2">
+                  <dt className="text-muted-foreground">Headline APR</dt>
+                  <dd className="text-right">{aprFromBps(row.headlineAprBps)}</dd>
+                  <dt className="text-muted-foreground">TVL</dt>
+                  <dd className="text-right">{usdCompact(row.tvlUsd)}</dd>
+                  <dt className="text-muted-foreground">In range</dt>
+                  <dd className="text-right">
+                    {row.activeTvlUsd === null ? '—' : usdCompact(row.activeTvlUsd)}
+                    {row.activeTvlShare !== null && (
+                      <span className="text-muted-foreground"> ({percentFromFraction(row.activeTvlShare)})</span>
+                    )}
+                  </dd>
+                </dl>
+              </details>
+            </li>
+          );
+        })}
+      </ul>
+    </>
   );
 }
 
 export function PoolTableSkeleton() {
   return (
-    <div className="space-y-px rounded-xl border border-border p-4" aria-hidden>
+    <div className="space-y-px rounded border border-border p-4" aria-hidden>
       {Array.from({ length: 6 }).map((_, i) => (
-        <div key={i} className="flex items-center gap-4 py-3">
-          <div className="h-9 w-48 animate-pulse rounded bg-muted" />
-          <div className="ml-auto h-5 w-20 animate-pulse rounded bg-muted" />
-          <div className="h-5 w-20 animate-pulse rounded bg-muted" />
+        <div key={i} className="flex items-center gap-3 py-3">
+          <div className="h-9 w-40 animate-pulse rounded bg-muted" />
+          <div className="ml-auto h-5 w-16 animate-pulse rounded bg-muted" />
           <div className="h-5 w-16 animate-pulse rounded bg-muted" />
-          <div className="h-5 w-40 animate-pulse rounded bg-muted" />
+          <div className="h-5 w-14 animate-pulse rounded bg-muted" />
+          <div className="h-5 w-16 animate-pulse rounded bg-muted" />
+          <div className="h-5 w-16 animate-pulse rounded bg-muted" />
+          <div className="h-5 w-32 animate-pulse rounded bg-muted" />
         </div>
       ))}
     </div>

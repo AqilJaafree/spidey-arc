@@ -1,8 +1,17 @@
 'use client';
 
-import { useId } from 'react';
+import { useEffect, useId, useState } from 'react';
 
 const PRESETS = [1_000, 10_000, 100_000, 1_000_000, 10_000_000];
+
+/** Parses free-typed input; returns an error message when the value can't be used, or null when it's fine. */
+function validate(raw: string): string | null {
+  if (raw.trim() === '') return 'Enter a value.';
+  const parsed = Number.parseFloat(raw);
+  if (!Number.isFinite(parsed)) return 'Enter a number.';
+  if (parsed <= 0) return 'Must be greater than zero.';
+  return null;
+}
 
 export function SizeControls({
   sizeUsd,
@@ -17,9 +26,22 @@ export function SizeControls({
 }) {
   const sizeId = useId();
   const holdId = useId();
+  const sizeErrorId = useId();
+  const holdErrorId = useId();
+
+  // Free-typed text, distinct from the committed numeric value: an invalid
+  // in-progress edit (empty, "-", "0") stays visible with its own message
+  // instead of silently reverting or blocking the keystroke.
+  const [sizeText, setSizeText] = useState(String(sizeUsd));
+  const [holdText, setHoldText] = useState(String(holdDays));
+  const [sizeError, setSizeError] = useState<string | null>(null);
+  const [holdError, setHoldError] = useState<string | null>(null);
+
+  useEffect(() => setSizeText(String(sizeUsd)), [sizeUsd]);
+  useEffect(() => setHoldText(String(holdDays)), [holdDays]);
 
   return (
-    <div className="flex flex-col gap-6 md:flex-row md:items-end md:gap-8">
+    <div className="flex flex-col gap-6 md:flex-row md:items-start md:gap-8">
       <div className="flex-1 space-y-2">
         <label htmlFor={sizeId} className="block text-sm font-medium">
           Your deposit
@@ -38,23 +60,35 @@ export function SizeControls({
             min={1}
             step={1000}
             autoComplete="off"
-            value={sizeUsd}
+            value={sizeText}
+            aria-invalid={sizeError !== null}
+            aria-describedby={sizeError ? sizeErrorId : undefined}
             onChange={(e) => {
-              const next = Number.parseFloat(e.target.value);
-              if (Number.isFinite(next) && next > 0) onSizeChange(next);
+              const raw = e.target.value;
+              setSizeText(raw);
+              const message = validate(raw);
+              setSizeError(message);
+              if (message === null) onSizeChange(Number.parseFloat(raw));
             }}
-            className="tabular w-full rounded-lg border border-input bg-card py-3 pr-4 pl-9 text-2xl focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background focus-visible:outline-none"
+            className={`tabular w-full rounded border bg-card py-3 pr-4 pl-9 text-2xl focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background focus-visible:outline-none ${
+              sizeError ? 'border-destructive' : 'border-input'
+            }`}
           />
         </div>
+        {sizeError && (
+          <p id={sizeErrorId} role="alert" className="text-xs text-destructive">
+            {sizeError} Showing results for {sizeUsd.toLocaleString('en-US')} until fixed.
+          </p>
+        )}
         <div className="flex flex-wrap gap-2 pt-1">
           {PRESETS.map((preset) => (
             <button
               key={preset}
               type="button"
               onClick={() => onSizeChange(preset)}
-              aria-pressed={sizeUsd === preset}
-              className={`tabular min-h-10 rounded-md border px-3 text-sm transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background focus-visible:outline-none ${
-                sizeUsd === preset
+              aria-pressed={sizeUsd === preset && sizeError === null}
+              className={`tabular min-h-11 rounded-sm border px-3 text-sm transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background focus-visible:outline-none ${
+                sizeUsd === preset && sizeError === null
                   ? 'border-primary bg-primary text-primary-foreground'
                   : 'border-border hover:bg-muted'
               }`}
@@ -77,12 +111,19 @@ export function SizeControls({
             min={1}
             step={1}
             autoComplete="off"
-            value={holdDays}
+            value={holdText}
+            aria-invalid={holdError !== null}
+            aria-describedby={holdError ? holdErrorId : undefined}
             onChange={(e) => {
-              const next = Number.parseFloat(e.target.value);
-              if (Number.isFinite(next) && next > 0) onHoldChange(next);
+              const raw = e.target.value;
+              setHoldText(raw);
+              const message = validate(raw);
+              setHoldError(message);
+              if (message === null) onHoldChange(Number.parseFloat(raw));
             }}
-            className="tabular w-full rounded-lg border border-input bg-card py-3 pr-14 pl-4 text-2xl focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background focus-visible:outline-none"
+            className={`tabular w-full rounded border bg-card py-3 pr-14 pl-4 text-2xl focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background focus-visible:outline-none ${
+              holdError ? 'border-destructive' : 'border-input'
+            }`}
           />
           <span
             className="pointer-events-none absolute top-1/2 right-4 -translate-y-1/2 text-sm text-muted-foreground"
@@ -91,7 +132,13 @@ export function SizeControls({
             days
           </span>
         </div>
-        <p className="text-xs text-muted-foreground">Sets the cost-payback hurdle.</p>
+        {holdError ? (
+          <p id={holdErrorId} role="alert" className="text-xs text-destructive">
+            {holdError}
+          </p>
+        ) : (
+          <p className="text-xs text-muted-foreground">Sets the cost-payback hurdle.</p>
+        )}
       </div>
     </div>
   );

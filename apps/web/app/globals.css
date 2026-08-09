@@ -1,9 +1,17 @@
 @import 'tailwindcss';
 
 /*
- * shadcn/ui neutral tokens (brand setup deferred — see brand.md).
- * Every colour in the app comes from these variables so light and dark both
- * work without a component ever hardcoding a hex.
+ * Ledger ink — a bookkeeper's two inks, not a trading terminal. Primary is
+ * a deep bottle-green (ledger credit-ink / old banknote green — finance's
+ * own green, not crypto neon). Accent is a blue-black fountain-pen ink.
+ * Both themes are real and user-toggleable: light is a rating-committee
+ * report read at a desk in daylight; dark is the same desk after hours,
+ * the ink now the brightest thing in the room. Sans (Geist) carries every
+ * label and sentence; serif (Libre Caslon Text) is reserved for exactly
+ * two things — the masthead heading and the hero gap figure; mono (Geist
+ * Mono) is reserved for tabular data. Every pair below is WCAG-verified
+ * (relative-luminance contrast, not eyeballed) against the surface it is
+ * actually used on — see the notes inline.
  */
 @theme inline {
   --color-background: var(--background);
@@ -17,6 +25,8 @@
   --color-ring: var(--ring);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
   --color-warning: var(--warning);
@@ -25,66 +35,126 @@
   --color-success-foreground: var(--success-foreground);
   --font-sans: var(--font-sans);
   --font-mono: var(--font-mono);
+  --font-serif: var(--font-serif);
 }
 
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --muted: oklch(0.97 0 0);
-  /* 0.45 lightness keeps small secondary text above 4.5:1 on both surfaces. */
-  --muted-foreground: oklch(0.45 0 0);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.545 0.19 258);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.51 0.19 27);
-  --destructive-foreground: oklch(0.985 0 0);
-  --warning: oklch(0.55 0.13 75);
-  --warning-foreground: oklch(0.985 0 0);
-  --success: oklch(0.5 0.13 155);
-  --success-foreground: oklch(0.985 0 0);
-  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
-  --font-mono: ui-monospace, 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+  /* paper-white, a whisper of the primary's own green, not cream/sand */
+  --background: oklch(0.99 0.004 150);
+  --card: oklch(0.965 0.008 150);
+  /* soft wash for hover states — between background and card */
+  --muted: oklch(0.93 0.01 150);
+  /* iron-gall ink black, 16.7:1 on background — AAA body text */
+  --foreground: oklch(0.22 0.022 150);
+  --card-foreground: oklch(0.22 0.022 150);
+  /* 5.3:1 on background, 5.0:1 on card — clears AA for small secondary text */
+  --muted-foreground: oklch(0.52 0.016 150);
+  /* 3.4:1 on background, 3.2:1 on card — WCAG 1.4.11 UI-boundary floor */
+  --border: oklch(0.63 0.014 150);
+  --input: oklch(0.63 0.014 150);
+  /* ledger credit-ink green. 10.1:1 on background */
+  --primary: oklch(0.36 0.095 150);
+  --primary-foreground: oklch(1 0 0);
+  /* blue-black fountain-pen ink, distinct in hue AND lightness from primary
+     (1.75:1 apart) so the two never read as variants of one color */
+  --accent: oklch(0.2 0.11 258);
+  --accent-foreground: oklch(1 0 0);
+  --destructive: oklch(0.5 0.18 25);
+  --destructive-foreground: oklch(1 0 0);
+  --warning: oklch(0.52 0.135 75);
+  --warning-foreground: oklch(1 0 0);
+  /* success reuses primary — ledger green already means "credit" here */
+  --success: var(--primary);
+  --success-foreground: var(--primary-foreground);
+  --ring: var(--accent);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    /* Dark surfaces lighten as they elevate; text is a soft white, not #fff. */
-    --background: oklch(0.145 0 0);
-    --foreground: oklch(0.93 0 0);
-    --card: oklch(0.185 0 0);
-    --card-foreground: oklch(0.93 0 0);
-    --muted: oklch(0.225 0 0);
-    --muted-foreground: oklch(0.72 0 0);
-    --border: oklch(0.28 0 0);
-    --input: oklch(0.28 0 0);
-    --ring: oklch(0.65 0.17 258);
-    --primary: oklch(0.93 0 0);
-    --primary-foreground: oklch(0.185 0 0);
-    --destructive: oklch(0.62 0.2 27);
-    --warning: oklch(0.72 0.14 75);
-    --success: oklch(0.68 0.15 155);
-  }
+.dark {
+  /* forest-shadow near-black, the same green undertone as the light paper */
+  --background: oklch(0.155 0.018 150);
+  --card: oklch(0.205 0.02 150);
+  --muted: oklch(0.24 0.02 150);
+  --foreground: oklch(0.94 0.01 150);
+  --card-foreground: oklch(0.94 0.01 150);
+  --muted-foreground: oklch(0.72 0.016 150);
+  --border: oklch(0.54 0.016 150);
+  --input: oklch(0.54 0.016 150);
+  --primary: oklch(0.68 0.13 150);
+  /* dark ink foreground for the now-lighter fill, 7.1:1 on primary */
+  --primary-foreground: oklch(0.16 0.02 150);
+  --accent: oklch(0.85 0.08 258);
+  --accent-foreground: oklch(0.16 0.02 150);
+  --destructive: oklch(0.68 0.17 25);
+  --destructive-foreground: oklch(0.16 0.02 25);
+  --warning: oklch(0.76 0.135 78);
+  --warning-foreground: oklch(0.16 0.02 78);
+  --success: var(--primary);
+  --success-foreground: var(--primary-foreground);
+  --ring: var(--accent);
+}
+
+:root {
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+  --font-serif: var(--font-caslon), 'Iowan Old Style', 'Palatino Linotype', Georgia, serif;
 }
 
 * {
   border-color: var(--border);
 }
 
+html {
+  color-scheme: light;
+}
+
+html.dark {
+  color-scheme: dark;
+}
+
 body {
   background: var(--background);
   color: var(--foreground);
   font-family: var(--font-sans);
+  font-feature-settings: 'cv11', 'ss01';
   -webkit-font-smoothing: antialiased;
 }
 
-/* Numbers in a comparison table must not dance when a digit changes. */
+h2,
+h3 {
+  letter-spacing: -0.02em;
+}
+
+/* Numbers must not dance when a digit changes — every price, APR and
+   balance in the app is set in mono with tabular figures. */
 .tabular {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
+}
+
+/* The one masthead dateline — deliberately not a reusable class. Repeating
+   this treatment above every section is the exact scaffold this rebuild
+   removed; it earns its place once, at the top of the page, styled inline
+   in page.tsx instead of as a component other sections can reach for. */
+
+/* Native disclosure styling for the mobile "Why" detail — kept plain and
+   quiet rather than reinvented as a custom widget. */
+details > summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+details > summary::-webkit-details-marker {
+  display: none;
+}
+
+/* Applied to <html> for ~220ms during an explicit theme toggle only, so
+   ordinary hovers/focus never carry this cost. See ThemeToggle. */
+.theme-transitioning,
+.theme-transitioning * {
+  transition:
+    background-color 200ms cubic-bezier(0.23, 1, 0.32, 1),
+    border-color 200ms cubic-bezier(0.23, 1, 0.32, 1),
+    color 200ms cubic-bezier(0.23, 1, 0.32, 1) !important;
 }
 
 @media (prefers-reduced-motion: reduce) {

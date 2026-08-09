@@ -82,6 +82,13 @@ export function gapInPoints(
   };
 }
 
+/** Text color for a gap's direction — shared by the table and the hero module. */
+export function gapTone(direction: 'above' | 'below' | 'level' | undefined): string {
+  if (direction === 'below') return 'text-warning';
+  if (direction === 'above') return 'text-success';
+  return 'text-muted-foreground';
+}
+
 export function relativeTime(iso: string | null | undefined): string {
   if (!iso) return 'never';
   const seconds = Math.round((Date.now() - Date.parse(iso)) / 1000);
