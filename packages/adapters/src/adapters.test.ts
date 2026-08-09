@@ -1,7 +1,14 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { rank, capitalForLiquidity, deltaFromBps } from '@spidey/core';
 import { parseFeeTier, splitSymbol } from './defillama.js';
-import { dailyReturnsBps, medianOf, modelledPriceHistogram, sqrtPriceX64ToRawPrice } from './series.js';
+import {
+  dailyReturnsBps,
+  medianOf,
+  modelledPriceHistogram,
+  peakToTroughBps,
+  sqrtPriceX64ToRawPrice,
+  traversedBandBps,
+} from './series.js';
 import { isStablePair, isUsdLikeSymbol, isUsdSymbol } from './types.js';
 import { orcaAdapter } from './orca.js';
 import { raydiumAdapter } from './raydium.js';
@@ -69,6 +76,85 @@ describe('series helpers', () => {
     expect(dailyReturnsBps([1, Number.NaN, 2])).toHaveLength(0);
     expect(dailyReturnsBps([0, 1])).toHaveLength(0);
     expect(dailyReturnsBps([])).toHaveLength(0);
+  });
+
+  it('measures peak-to-trough per candle, in bps of the low', () => {
+    const ranges = peakToTroughBps([
+      { high: 101, low: 100 },
+      { high: 76.75884791363161, low: 73.57292857690057 },
+    ]);
+    expect(ranges).toHaveLength(2);
+    expect(ranges[0]).toBeCloseTo(100, 6);
+    // The live SOL-USDC candle for 2026-08-08: 433.0bps peak to trough.
+    expect(ranges[1]).toBeCloseTo(433.03, 2);
+  });
+
+  it('drops unusable candles rather than producing NaN or a negative range', () => {
+    expect(peakToTroughBps([{ high: Number.NaN, low: 1 }])).toHaveLength(0);
+    expect(peakToTroughBps([{ high: 1, low: Number.POSITIVE_INFINITY }])).toHaveLength(0);
+    expect(peakToTroughBps([{ high: 1, low: 0 }])).toHaveLength(0);
+    expect(peakToTroughBps([{ high: 1, low: -1 }])).toHaveLength(0);
+    // low above high is a broken row, not a range to be signed the other way.
+    expect(peakToTroughBps([{ high: 1, low: 2 }])).toHaveLength(0);
+    expect(peakToTroughBps([])).toHaveLength(0);
+    // Bad rows are dropped one by one, not taken as grounds to drop the series.
+    expect(peakToTroughBps([{ high: 2, low: 1 }, { high: 1, low: 0 }])).toHaveLength(1);
+  });
+
+  /**
+   * The reason `peakToTroughBps` exists, on the numbers that motivated it.
+   *
+   * These are eight consecutive live SOL-USDC daily candles. Close-to-close reads
+   * the second day as an 8bp move; the price actually swung 317bps and came back,
+   * which knocks a tight position out of range just the same. Any `p_exit` built
+   * on closes is an underestimate of exit risk — the flattering direction.
+   */
+  it('exceeds close-to-close on the same series, day by day', () => {
+    const candles = [
+      { high: 75.23922176555142, low: 72.55028728027432, close: 72.81188659440244 },
+      { high: 73.13290040952874, low: 70.57566929885208, close: 71.88601780628652 },
+      { high: 74.2527861077102, low: 71.88601780628652, close: 73.54351117243161 },
+      { high: 74.19341950116214, low: 71.91477221340905, close: 73.48471164556129 },
+      { high: 74.4014105319146, low: 73.01600468796954, close: 73.72019219783614 },
+      { high: 74.72943225697549, low: 73.24998327649224, close: 73.95642734367553 },
+      { high: 74.28248722215326, low: 72.40536066402055, close: 73.6612514109072 },
+      { high: 76.75884791363161, low: 73.57292857690057, close: 75.96485062522133 },
+    ];
+    const intraday = peakToTroughBps(candles);
+    const closeToClose = dailyReturnsBps(candles.map((c) => c.close));
+
+    // Day-for-day, on the seven days both cover — `dailyReturnsBps` needs a
+    // predecessor, so it produces one fewer.
+    expect(intraday).toHaveLength(8);
+    expect(closeToClose).toHaveLength(7);
+    for (let i = 0; i < closeToClose.length; i += 1) {
+      expect(intraday[i + 1]!).toBeGreaterThan(closeToClose[i]!);
+    }
+    expect(medianOf(intraday)! / medianOf(closeToClose)!).toBeGreaterThan(1.5);
+  });
+
+  it('measures the band traversed across the whole window, not within a day', () => {
+    // Two quiet days that drift: 100bps each, 300bps end to end. A position is
+    // not re-centred at midnight, so the wander is what it misses.
+    const candles = [
+      { high: 101, low: 100 },
+      { high: 130, low: 129 },
+    ];
+    expect(medianOf(peakToTroughBps(candles))).toBeCloseTo(88.8, 1);
+    expect(traversedBandBps(candles)).toBeCloseTo(3_000, 6);
+  });
+
+  it('reports no band rather than a zero one', () => {
+    // A zero band puts every dollar of volume at the peg and hands back full
+    // capture at any δ — the most flattering answer available, from the least
+    // trustworthy input. Same posture as `medianOf([])`.
+    expect(traversedBandBps([{ high: 100, low: 100 }])).toBeNull();
+    expect(traversedBandBps([])).toBeNull();
+    expect(traversedBandBps([{ high: 1, low: 0 }])).toBeNull();
+    expect(traversedBandBps([{ high: 2, low: 1 }, { high: Number.NaN, low: 1 }])).toBeCloseTo(
+      10_000,
+      6,
+    );
   });
 
   it('models volume uniformly over the traversed band, conserving total', () => {

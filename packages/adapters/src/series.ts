@@ -30,12 +30,84 @@ export function dailyReturnsBps(closes: readonly number[]): number[] {
   return out;
 }
 
+/** The two fields a range needs. OHLCV rows carry more; nothing here reads it. */
+export type HighLow = { high: number; low: number };
+
+/**
+ * Per-candle peak-to-trough range in basis points — `(high - low) / low`.
+ *
+ * The honest sibling of {@link dailyReturnsBps}, and it lives here so the two
+ * are read together. That one measures close-to-close because closes are all
+ * Orca publishes; this one measures the actual extremes, which is what
+ * `daily24hRangesBps` is documented to hold and what §7.4's `p_exit` asks for.
+ *
+ * The gap between them is not a rounding difference. Measured on 8 days of live
+ * Meteora SOL-USDC candles (`high/low` against `close/open`):
+ *
+ *     329.2bps vs 230.6bps    1.43x
+ *     316.9bps vs   8.0bps   39.63x   <- moved 317bps and came back
+ *     189.7bps vs  32.0bps    5.92x
+ *     202.0bps vs  32.0bps    6.30x
+ *     267.5bps vs 190.1bps    1.41x
+ *     259.3bps vs 141.0bps    1.84x
+ *     433.0bps vs 312.7bps    1.38x
+ *      96.4bps vs  32.0bps    3.01x
+ *
+ * 1.38x to 39.6x. A day that leaves and returns registers as no movement at all
+ * close-to-close, while the position it would have knocked out of range is just
+ * as knocked out — so wherever both are available, this is the one to use, and
+ * `dailyReturnsBps` is the fallback for venues that publish only closes.
+ *
+ * Bad candles are dropped rather than thrown on, matching `dailyReturnsBps`:
+ * one malformed row must not cost a pool its whole series.
+ */
+export function peakToTroughBps(candles: readonly HighLow[]): number[] {
+  const out: number[] = [];
+  for (const candle of candles) {
+    const { high, low } = candle;
+    if (!Number.isFinite(high) || !Number.isFinite(low) || low <= 0 || high < low) continue;
+    out.push(((high - low) / low) * 10_000);
+  }
+  return out;
+}
+
+/**
+ * The band the price traversed across every candle, bps — `(max high - min low) / min low`.
+ *
+ * Not the same question as the median of {@link peakToTroughBps}, and the
+ * difference is the whole reason this exists. A daily range is what the price did
+ * *within* a day; this is how far it wandered over the window. A position is not
+ * re-centred every midnight, so over a hold of several days the flow it misses is
+ * set by the wander, not by one day's swing.
+ *
+ * `null` when no candle is usable, and — deliberately — when the traversed band
+ * is zero. A degenerate series (every `high === low`) would otherwise model all
+ * volume at the peg and hand back full capture at any δ, which is the most
+ * flattering value available from the least trustworthy input.
+ */
+export function traversedBandBps(candles: readonly HighLow[]): number | null {
+  let high = -Infinity;
+  let low = Infinity;
+  for (const candle of candles) {
+    if (!Number.isFinite(candle.high) || !Number.isFinite(candle.low)) continue;
+    if (candle.low <= 0 || candle.high < candle.low) continue;
+    high = Math.max(high, candle.high);
+    low = Math.min(low, candle.low);
+  }
+  if (!Number.isFinite(high) || !Number.isFinite(low)) return null;
+  const band = ((high - low) / low) * 10_000;
+  return band > 0 ? band : null;
+}
+
 /**
  * A modelled volume-by-distance-from-peg histogram.
  *
- * ASSUMPTION, stated plainly: 24h volume is distributed uniformly across the
- * price band the pool actually traversed in those 24 hours. So for a band of
- * half-width `R`, the share of volume within ±δ is `min(1, δ/R)`.
+ * ASSUMPTION, stated plainly: 24h volume is distributed uniformly across a
+ * price band of half-width `R`, so the share within ±δ is `min(1, δ/R)`.
+ *
+ * `R` is the caller's to choose and is the entire model — see
+ * {@link traversedBandBps} for why the band a position is judged against is the
+ * one the price traversed over the *hold*, not over one day.
  *
  * This is deliberately crude and deliberately conservative for tight ranges:
  * real order flow clusters near the peg far more tightly than uniform (§7.4
