@@ -14,12 +14,43 @@ import {
   MODELLED_RANGE_FACTOR,
   modelledRangeFor,
   normalizeMeteoraPool,
+  observedRangesFrom,
+  ohlcvUrl,
+  OHLCV_WINDOW_DAYS,
   poolsUrl,
   topKByFeeRatio,
+  usableCandles,
   type BinSource,
+  type MeteoraCandle,
   type MeteoraPool,
+  type RangeSource,
 } from './meteora.js';
 import { activeTvlWithin } from './meteoraBins.js';
+
+/**
+ * A range source that answers "nothing observed" without touching the network.
+ *
+ * Needed wherever a test stubs `binSource`: `listPools` builds a live OHLCV
+ * source when none is passed, so stubbing only the RPC leaves a test reaching
+ * `dlmm.datapi.meteora.ag` once per enriched pool.
+ */
+const noRanges: RangeSource = async () => [];
+
+/**
+ * Daily candles from `[low, high]` pairs, oldest first, plus the partial candle
+ * the reader always discards — so a caller's first pair is the oldest day the
+ * model actually sees.
+ */
+const candles = (...days: Array<[number, number]>): MeteoraCandle[] =>
+  [...days, [days.at(-1)?.[0] ?? 1, days.at(-1)?.[0] ?? 1] as [number, number]].map(
+    ([low, high], i) => ({ timestamp: 1_785_456_000 + i * 86_400, low, high }),
+  );
+
+/** Seven days drifting a percent a day: 100bp daily ranges, a 700bp week. */
+const DRIFTING = candles([100, 101], [101, 102], [102, 103], [103, 104], [104, 105], [105, 106], [106, 107]);
+
+/** Seven days swinging 30%: 3000bp daily ranges, a 3000bp week. */
+const SWINGING = candles([100, 130], [100, 130], [100, 130], [100, 130], [100, 130], [100, 130], [100, 130]);
 
 /** The live SOL-USDC row, trimmed to the fields the normalizer reads. */
 const SOL_USDC: MeteoraPool = {
@@ -476,13 +507,62 @@ describe('enrichWithBins', () => {
   });
 });
 
+describe('reading the OHLCV window', () => {
+  it('asks for a URL with no timestamps in it', () => {
+    // A window would be two timestamps, `fixtureName` hashes the URL, and a
+    // fixture keyed on the minute it was recorded can never be replayed.
+    const url = ohlcvUrl(SOL_USDC.address);
+    expect(url).toBe(`${METEORA_BASE}/pools/${SOL_USDC.address}/ohlcv?timeframe=24h`);
+    expect(url).not.toMatch(/start_time|end_time|\d{10}/);
+  });
+
+  it('drops the day in progress and keeps the seven complete ones', () => {
+    const ten = candles(...(Array.from({ length: 9 }, (_, i) => [100 + i, 101 + i]) as Array<[number, number]>));
+    expect(ten).toHaveLength(10);
+    const usable = usableCandles(ten);
+    // The newest candle covers only the hours elapsed, so its range is short by
+    // construction — short is the flattering direction in both places these are
+    // used, so it goes whether or not it looks complete.
+    expect(usable).toHaveLength(OHLCV_WINDOW_DAYS);
+    expect(usable.at(-1)).toEqual(ten.at(-2));
+    expect(usable[0]).toEqual(ten[2]);
+  });
+
+  it('reports one candle and no candles as nothing observed', () => {
+    // §10.2, and the whole point of the exercise: an empty `data` means unknown.
+    // Returning an empty *series* instead would make `rank.ts` score p_exit as
+    // zero, which is the flattering end of §7.4's inequality.
+    expect(observedRangesFrom([])).toBeNull();
+    expect(observedRangesFrom(candles())).toBeNull();
+    expect(observedRangesFrom([{ timestamp: 1, low: 1, high: 2 }])).toBeNull();
+  });
+
+  it('reports nothing observed rather than a zero band for a flat series', () => {
+    expect(observedRangesFrom(candles([100, 100], [100, 100]))).toBeNull();
+  });
+
+  it('takes the band from the week and the ranges from the days', () => {
+    const observed = observedRangesFrom(DRIFTING)!;
+    expect(observed.daily24hRangesBps).toHaveLength(7);
+    // ~100bp a day, 700bp across the week. The gap between those two numbers is
+    // the reason the band is not the median daily range.
+    expect(Math.max(...observed.daily24hRangesBps)).toBeLessThan(101);
+    expect(observed.bandBps).toBeCloseTo(700, 6);
+  });
+});
+
 /**
- * `V_δ` must not come out maximally optimistic at the δ this adapter pins.
+ * `V_δ` must not come out maximally optimistic at the δ this adapter pins, and
+ * must not come out identical for every pool either.
  *
  * The band was a flat 100bp while enriched rows declare 500, so
  * `resolveDeltaBps` evaluated them at 500, `volumeInRange` summed every bucket,
  * and `V_δ` was 100% of 24h volume for every enriched pool — the least
- * conservative value available, reported to the user as a measurement.
+ * conservative value available, reported to the user as a measurement. Deriving
+ * the band from the declared width fixed that and left `min(1, δ/2δ)`, a
+ * constant: a stablecoin pair and a memecoin pair modelled identical capture.
+ * The tests below cover the constant, which survives as the no-candles fallback;
+ * the suite after them covers the observed band that replaced it.
  */
 describe('the modelled volume band stays wider than the declared coverage', () => {
   it('is wider by the factor rank.ts calls the limit of comparability', () => {
@@ -558,6 +638,167 @@ describe('the modelled volume band stays wider than the declared coverage', () =
 });
 
 /**
+ * The observed band, which is what makes `volumeCapture` a per-pool number.
+ *
+ * The constant band above is honest but empty of information: every enriched pool
+ * reported 51% capture whatever it traded like, so the ranker could not tell a
+ * stablecoin pair from a memecoin pair on the one term that is supposed to
+ * separate them. And `daily24hRangesBps` was never supplied at all, so
+ * `rank.ts:372` scored `p_exit = 0` — no adverse selection, ever — for the only
+ * venue this vault can route to on Solana.
+ */
+describe('the volume band and the exit risk come from the candles', () => {
+  const bins: BinSource = async () => ({
+    activeId: 0,
+    binStep: 4,
+    bins: [{ binId: 0, amountX: 2n * 10n ** 9n, amountY: 50_000n * 10n ** 6n }],
+    coveredBps: 500,
+  });
+
+  const enriched = async (ranges: RangeSource, row: MeteoraPool = SOL_USDC) => {
+    const r = normalizeMeteoraPool(row, 1);
+    if ('skip' in r) throw new Error('fixture should normalize');
+    const [pool] = await enrichWithBins([r], { source: bins, ranges, rows: [row] });
+    return pool!;
+  };
+
+  const ranked = async (ranges: RangeSource, row: MeteoraPool = SOL_USDC) => {
+    const result = rank([await enriched(ranges, row)], { depositUsd: 1_000, now: 1 });
+    expect(result.excluded).toHaveLength(0);
+    return result.ranked[0]!;
+  };
+
+  /** `p_exit`, recovered from the entry verdict: `adverseSelectionCost = (δ/2) · p_exit`. */
+  const exitProbability = (row: Awaited<ReturnType<typeof ranked>>): number =>
+    row.entry!.adverseSelectionCost / (row.deltaBps / 10_000 / 2);
+
+  it('gives two pools with the same volume different capture', async () => {
+    // The claim this whole change exists to make. Same row, same bins, same 24h
+    // volume, same δ — only the candles differ, and capture differs 4x.
+    const quiet = await ranked(async () => DRIFTING);
+    const wild = await ranked(async () => SWINGING);
+
+    expect(quiet.deltaBps).toBe(500);
+    expect(wild.deltaBps).toBe(500);
+    expect(quiet.volumeCapture!).toBeCloseTo(0.7073, 4);
+    expect(wild.volumeCapture!).toBeCloseTo(0.1707, 4);
+    // Neither is the old constant, and neither saturates.
+    expect(quiet.volumeCapture!).toBeLessThan(1);
+    expect(quiet.volumeCapture!).not.toBeCloseTo(0.5122, 3);
+    expect(wild.volumeCapture!).not.toBeCloseTo(0.5122, 3);
+  });
+
+  it('stops scoring adverse selection as impossible', async () => {
+    const wild = await ranked(async () => SWINGING);
+    // Seven days of 3000bp swings against a ±500bp range: every day is an exit.
+    expect(wild.entry!.adverseSelectionCost).toBeGreaterThan(0);
+    expect(exitProbability(wild)).toBeCloseTo(1, 6);
+
+    // And a pool that drifted 100bp a day never left, which is a measurement
+    // too — the point is that zero now has to be earned from a series.
+    const quiet = await ranked(async () => DRIFTING);
+    expect(exitProbability(quiet)).toBe(0);
+    expect(quiet.entry!.adverseSelectionCost).toBe(0);
+  });
+
+  it('counts a day that swung and came back as an exit', async () => {
+    // The `dailyReturnsBps` blind spot, priced. Three of seven days open and
+    // close at 100 having touched 106; close-to-close sees no movement at all and
+    // would score p_exit = 0, and the position it knocked out is out either way.
+    const roundTrips = candles([100, 101], [100, 106], [100, 101], [100, 106], [100, 101], [100, 106], [100, 101]);
+    const row = await ranked(async () => roundTrips);
+    expect(exitProbability(row)).toBeCloseTo(3 / 7, 6);
+  });
+
+  it('keeps the source label modelled, and the volume whole', async () => {
+    // Only the width of the band was measured, never where inside it the flow
+    // sat, so the label cannot be upgraded — and a wider band redistributes
+    // volume rather than discarding it.
+    const p = await enriched(async () => SWINGING);
+    expect(p.priceHistogramSource).toBe('modelled-uniform-over-range');
+    expect(p.daily24hRangesBps).toHaveLength(7);
+    expect(p.priceHistogram.reduce((sum, b) => sum + b.volumeUsd, 0)).toBeCloseTo(
+      SOL_USDC.volume!['24h']!,
+      3,
+    );
+    expect(Math.max(...p.priceHistogram.map((b) => b.bpsFromPeg))).toBeCloseTo(3_000, 6);
+  });
+
+  describe('when the candles do not arrive', () => {
+    const dead: RangeSource = async () => {
+      throw new Error('OHLCV down');
+    };
+
+    it('falls back to the constant band, never to a zero series', async () => {
+      // No worse than before the candles existed: the fallback band, no ranges,
+      // and so `rank.ts` back on `p_exit = 0` — which is the flattering value,
+      // and exactly why the fallback must never be reached by an *empty* series
+      // pretending to be an observation.
+      for (const ranges of [dead, noRanges, async () => [{ timestamp: 1, low: 1, high: 2 }]]) {
+        const row = await ranked(ranges as RangeSource);
+        expect(row.volumeCapture!).toBeCloseTo(0.5122, 3);
+        expect(exitProbability(row)).toBe(0);
+      }
+      expect((await enriched(dead)).daily24hRangesBps).toBeUndefined();
+      expect((await enriched(noRanges)).daily24hRangesBps).toBeUndefined();
+    });
+
+    it('keeps the bin denominator, which is the valuable half', async () => {
+      // The two reads are independent and unequal: the bins are the only reason
+      // this row can be ranked at all, and a dead candle endpoint must not cost
+      // the row its fidelity, its histogram or its declared width.
+      const p = await enriched(dead);
+      expect(p.activeTvlFidelity).toBe('tick-level');
+      expect(p.activeTvlUsd!).toBeGreaterThan(0);
+      expect(p.activeTvlDeltaBps).toBe(500);
+      expect(p.liquidityHistogram!.length).toBeGreaterThan(0);
+    });
+  });
+
+  it('keeps the candles when the bins are the half that fails', async () => {
+    // The other direction. The row loses its denominator and its rankability,
+    // as it always did — and keeps the volatility series, because nothing about
+    // a failed account read makes the price history wrong.
+    const r = normalizeMeteoraPool(SOL_USDC, 1);
+    if ('skip' in r) throw new Error('fixture should normalize');
+    const [p] = await enrichWithBins([r], {
+      source: async () => {
+        throw new Error('RPC down');
+      },
+      ranges: async () => SWINGING,
+      rows: [SOL_USDC],
+    });
+
+    expect(p!.activeTvlFidelity).toBe('unavailable');
+    expect(p!.activeTvlUsd).toBeNull();
+    expect(p!.daily24hRangesBps).toHaveLength(7);
+    expect(Math.max(...p!.priceHistogram.map((b) => b.bpsFromPeg))).toBeCloseTo(3_000, 6);
+  });
+
+  it('asks for candles only for the pools it asks for bins', async () => {
+    // Rationed exactly as the RPC is. `daily24hRangesBps` and a volume band only
+    // change a score for a pool that has a denominator to be scored on, and on
+    // the recorded page that is 8 rows out of 56.
+    const asked: string[] = [];
+    const adapter = createMeteoraAdapter({
+      fetchPools: async () => [withRatio('TOP', 0.9), withRatio('REST', 0.001)],
+      topK: 1,
+      binSource: bins,
+      rangeSource: async (poolId) => {
+        asked.push(poolId);
+        return DRIFTING;
+      },
+    });
+
+    const { pools } = await adapter.listPools({ symbols: ['USDC'], now: 1 });
+    expect(asked).toEqual(['TOP']);
+    const byId = new Map(pools.map((p) => [p.poolId, p]));
+    expect(byId.get('TOP')!.daily24hRangesBps).toHaveLength(7);
+    expect(byId.get('REST')!.daily24hRangesBps).toBeUndefined();
+  });
+});
+
+/**
  * The end-to-end claim: an enriched row is actually rankable.
  *
  * Everything above asserts the shape of the row. Only `rank()` asserts that the
@@ -610,6 +851,7 @@ describe('listPools enrichment', () => {
     const adapter = createMeteoraAdapter({
       fetchPools: async () => rows,
       topK: 1,
+      rangeSource: noRanges,
       binSource: async () => ({
         activeId: 0,
         binStep: 4,
@@ -653,6 +895,7 @@ describe('listPools enrichment', () => {
         { ...withRatio('DEAD', 0.9), pool_config: { base_fee_pct: 0.04 } },
       ],
       topK: 1,
+      rangeSource: noRanges,
       binSource: async (poolId) => {
         asked.push(poolId);
         return {
@@ -683,6 +926,7 @@ describe('listPools enrichment', () => {
     };
     const adapter = createMeteoraAdapter({
       fetchPools: async () => [small, withRatio('BIG', 0.05)],
+      rangeSource: noRanges,
       binSource: async (poolId) => {
         asked.push(poolId);
         return {
@@ -1025,4 +1269,5 @@ describe('bin data against the recorded chain state', () => {
     expect(pools.filter((p) => p.activeTvlFidelity === 'tick-level')).toHaveLength(8);
     expect(pools.filter((p) => p.activeTvlFidelity === 'unavailable')).toHaveLength(48);
   });
+
 });

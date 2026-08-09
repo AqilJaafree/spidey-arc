@@ -31,7 +31,7 @@ import {
   LB_PAIR_SLICE,
   type IdentifiedBin,
 } from './meteoraBins.js';
-import { modelledPriceHistogram } from './series.js';
+import { modelledPriceHistogram, peakToTroughBps, traversedBandBps } from './series.js';
 import {
   discoverBinArrays,
   getMultipleAccounts,
@@ -93,39 +93,28 @@ export const DEFAULT_BIN_COVERAGE_BPS = 500;
 export const MAX_BIN_ARRAYS_PER_POOL = MAX_ACCOUNTS_PER_CALL;
 
 /**
- * How much wider the modelled volume band is than the width a row declares.
+ * How much wider the *unobserved* volume band is than the width a row declares.
  *
  * `modelledPriceHistogram` spreads 24h volume uniformly over ±R, so the share
- * inside ±δ is `min(1, δ/R)` and the choice of R is the entire model. This used
- * to be a flat 100bp while enriched rows declare `activeTvlDeltaBps: 500` — five
+ * inside ±δ is `min(1, δ/R)` and the choice of R is the entire model. R used to
+ * be a flat 100bp while enriched rows declare `activeTvlDeltaBps: 500` — five
  * times narrower than the δ `resolveDeltaBps` then evaluates them at, so
  * `volumeInRange` summed every bucket and `V_δ` came out as 100% of 24h volume
  * for every enriched pool, unconditionally. That is the least conservative value
  * available, and `explain()` handed it to the user as "Captures 100% of 24h
  * volume in range at ±500bp" — a modelled figure phrased as a measurement.
  *
- * The old docblock argued the opposite: a wider band puts less volume inside a
- * tight δ, which is the conservative direction. True, and inapplicable at the δ
- * this adapter itself pins. The argument holds only while `R > δ`; below that the
- * model saturates, and saturation is the optimistic end.
+ * Deriving R from the declared width instead fixed the saturation and nothing
+ * else: `min(1, δ/2δ)` is a constant, so every enriched pool reported the same
+ * 51% capture whatever it traded like. The band now comes from the pool's own
+ * OHLCV candles — see {@link observedRangesFrom} — and this factor survives only
+ * as the fallback for a row with no usable candles, where an unobserved band is
+ * all there is.
  *
- * So the band is derived from the declared width rather than fixed, and the
- * factor is 2 for a reason already in the codebase: `RANGE_WIDTH_TOLERANCE` is 2,
- * the factor beyond which `rank.ts` judges two range widths incomparable. A band
- * of 2δ is therefore the widest — and so most conservative — price range still
- * related to δ by the ranker's own standard. Capture lands at a flat 51% of 24h
- * volume at the declared width instead of 100%.
- *
- * "Flat" is the dishonesty that remains, and it cannot be fixed from this
- * response. `orca.ts` derives its band from the pool's own observed daily range
- * and gets captures spanning 0.024–1.0; this is a constant times a constant, so a
- * stable pair and a memecoin pair still model identical capture when the
- * memecoin's real capture is far lower. Meteora publishes an OHLCV endpoint,
- * which is what the honest version needs — one more fetch per enriched pool,
- * with `dailyReturnsBps` and `medianOf` already written to consume it and
- * `priceHistogramSource` already the field that would stop saying
- * `modelled-uniform-over-range`. This is the conservative interim, not the
- * answer.
+ * The factor is 2 for a reason already in the codebase: `RANGE_WIDTH_TOLERANCE`
+ * is 2, the factor beyond which `rank.ts` judges two range widths incomparable.
+ * A band of 2δ is therefore the widest — and so most conservative — price range
+ * still related to δ by the ranker's own standard.
  */
 export const MODELLED_RANGE_FACTOR = 2;
 
@@ -266,6 +255,14 @@ export type MeteoraOptions = {
   rpcUrl?: string;
   /** Seam for tests; production builds an RPC-backed source. */
   binSource?: BinSource;
+  /**
+   * Seam for tests; production builds an OHLCV-backed source.
+   *
+   * Same hazard as `binSource`, and it has to be stubbed for the same reason: a
+   * test that stubs only `fetchPools` and `binSource` still reaches the live
+   * candle endpoint for every enriched pool.
+   */
+  rangeSource?: RangeSource;
 } & EnrichmentFloors;
 
 async function fetchPoolsLive(ctx: AdapterContext, pageSize: number): Promise<MeteoraPool[]> {
@@ -313,8 +310,15 @@ export function createMeteoraAdapter(options: MeteoraOptions = {}): VenueAdapter
         if (pools.length >= limit) break;
       }
 
-      const { topK = DEFAULT_TOP_K, coverageBps, rpcUrl, binSource, minTvlUsd, minVolume24hUsd } =
-        options;
+      const {
+        topK = DEFAULT_TOP_K,
+        coverageBps,
+        rpcUrl,
+        binSource,
+        rangeSource,
+        minTvlUsd,
+        minVolume24hUsd,
+      } = options;
       if (topK <= 0 || pools.length === 0) return { pools, skipped };
 
       // Rank among the rows that actually survived normalization — enriching a
@@ -334,9 +338,15 @@ export function createMeteoraAdapter(options: MeteoraOptions = {}): VenueAdapter
 
       const enriched = await enrichWithBins(pools, {
         // Hazard, paid for once: stubbing `fetchPools` does not isolate a test
-        // from the network, because this line still reaches a live RPC. A test
-        // that wants no network must pass `topK: 0` or its own `binSource`.
+        // from the network, because these two lines still reach a live RPC and a
+        // live REST host. A test that wants no network must pass `topK: 0`, or
+        // its own `binSource` *and* `rangeSource`.
         source: binSource ?? createRpcBinSource({ rpcUrl, signal: ctx.signal }),
+        // Rationed exactly as the bin reads are, and for the same reason: a
+        // volume band and a volatility series only change a score for a pool that
+        // has a denominator to be scored on, and `chosen` is that set. Asking for
+        // all 56 rows would be 48 wasted requests per scan.
+        ranges: rangeSource ?? createOhlcvRangeSource({ signal: ctx.signal }),
         rows: chosen,
         coverageBps,
       });
@@ -431,21 +441,149 @@ export function topKByFeeRatio(
     .slice(0, Math.max(0, k));
 }
 
+/** One daily candle. `high` and `low` are the fields that make this worth reading. */
+export type MeteoraCandle = {
+  timestamp: number;
+  timestamp_str?: string;
+  open?: number;
+  high: number;
+  low: number;
+  close?: number;
+  volume?: number;
+};
+
+export type MeteoraOhlcvResponse = {
+  start_time?: number;
+  end_time?: number;
+  timeframe?: string;
+  data?: MeteoraCandle[];
+};
+
+/**
+ * Daily candles for one pool.
+ *
+ * No `start_time`/`end_time`, deliberately, and this is the one design decision
+ * in the URL. The endpoint accepts an explicit window — but a window is a pair of
+ * timestamps, timestamps are hashed into the fixture name, and a fixture keyed on
+ * the minute it was recorded can never be replayed. (Passing them *empty*, as the
+ * docs suggest, is a 400: "cannot parse integer from empty string".) With no
+ * window the response is the last 10 daily candles, which covers the 7 days §7.4
+ * asks for with room to spare.
+ *
+ * Two facts about the window, bisected live, for whoever does pass one:
+ * `timeframe=24h` over 99 days returns 100 candles, and over 100 days returns
+ * HTTP 200 with `data: []`. Not an error, not a partial response — the same silent
+ * cap `/volume/history` has. Which is why an empty `data` is read here as
+ * *unknown* and never as "no volatility": zero ranges would make `p_exit` zero,
+ * the most flattering value in §7.4's inequality, from the least informative
+ * response. Same shape as `current?.yourAprBps ?? 0` in
+ * `docs/cross-chain-review.md` §2.3.
+ */
+export const ohlcvUrl = (poolId: string): string =>
+  `${METEORA_BASE}/pools/${poolId}/ohlcv?timeframe=24h`;
+
+/** Days of history the range model reads, per §7.4 and `rank`'s 7-day default hold. */
+export const OHLCV_WINDOW_DAYS = 7;
+
+export type RangeSource = (poolId: string) => Promise<MeteoraCandle[]>;
+
+/**
+ * The candles the range model will use: the last {@link OHLCV_WINDOW_DAYS}
+ * *complete* days, oldest first.
+ *
+ * The newest candle is dropped because it is the day in progress — its high and
+ * low span only the hours elapsed, so its range is short by construction, and a
+ * short range is the flattering direction in both places these candles are used.
+ * Dropped unconditionally rather than by comparing its timestamp to the clock:
+ * a fixture recorded last week must slice to the same candles today, or replay
+ * stops being replay.
+ */
+export const usableCandles = (candles: readonly MeteoraCandle[]): MeteoraCandle[] =>
+  candles.slice(0, -1).slice(-OHLCV_WINDOW_DAYS);
+
+/** What one OHLCV read contributes to a row. */
+export type ObservedRanges = {
+  /** Peak-to-trough range per day, bps — `p_exit`'s empirical input (§7.4). */
+  daily24hRangesBps: number[];
+  /** `R`, the half-width the 24h volume model spreads over. */
+  bandBps: number;
+};
+
+/**
+ * Turn candles into the two numbers the ranker needs, or into `null`.
+ *
+ * `null` — no ranges, no band — is the answer for an empty `data`, a response of
+ * one candle, or candles too broken to measure. It leaves `daily24hRangesBps`
+ * absent and the band on its {@link MODELLED_RANGE_FACTOR} fallback, which is
+ * exactly today's behaviour. An empty *series* would be far worse than an absent
+ * one: `estimateExitProbability` never sees it, `rank.ts` substitutes zero, and
+ * the pool is scored as though drifting out of range were impossible.
+ *
+ * The band is the week's traversed band, not the median daily range, and that is
+ * the substantive choice here. `resolveDeltaBps` evaluates these rows at δ = 500,
+ * so a median daily range — 243–994bps across the eight live enriched pools —
+ * lands at or under δ for six of them and `min(1, δ/R)` saturates at 1.0 again,
+ * which is the defect this replaces, only now dressed in an observation. The
+ * traversed band is the honest quantity at the horizon the position is actually
+ * held for: `rank`'s `expectedHoldDays` defaults to 7, a range is not re-centred
+ * at midnight, and the flow a fixed range misses over a week is set by how far
+ * the price wandered, not by one day's swing. Diffusion agrees to within ~20% on
+ * live data — `median × √7` reproduces the measured 7-day band on SOL-USDC
+ * (707 vs 678bps) and on PUMP-USDC (2260 vs 2583bps) — so this is the same
+ * number reached from observation instead of from a model.
+ *
+ * It can still reach 1.0, and only one way: a pair whose entire week fits inside
+ * ±δ. At δ = 500 that means a hard-pegged pair, for which full capture is simply
+ * true (§7.4 puts 80–95% of stable-pair volume within ±5bps). None of the eight
+ * live pools reach it; the spread is 0.17–0.85.
+ */
+export function observedRangesFrom(candles: readonly MeteoraCandle[]): ObservedRanges | null {
+  const usable = usableCandles(candles);
+  const daily24hRangesBps = peakToTroughBps(usable);
+  const bandBps = traversedBandBps(usable);
+  if (daily24hRangesBps.length === 0 || bandBps === null) return null;
+  return { daily24hRangesBps, bandBps };
+}
+
+/** The production {@link RangeSource}: one recorded, replayable GET per pool. */
+export function createOhlcvRangeSource(options: { signal?: AbortSignal } = {}): RangeSource {
+  return async (poolId) => {
+    const body = await getJson<MeteoraOhlcvResponse>(ohlcvUrl(poolId), {
+      namespace: 'meteora',
+      signal: options.signal,
+    });
+    return body.data ?? [];
+  };
+}
+
 export type EnrichOptions = {
   source: BinSource;
+  /**
+   * Candles for the volume band and the volatility series. Absent means no
+   * observation — never a live fetch — so a caller that stubs `source` to stay
+   * off the network stays off it.
+   */
+  ranges?: RangeSource;
   /** The raw API rows whose pools should be enriched. */
   rows: readonly MeteoraPool[];
   coverageBps?: number;
 };
 
 /**
- * Attach a real in-range denominator to the pools named in `options.rows`.
+ * Attach a real in-range denominator — and an observed volume band — to the pools
+ * named in `options.rows`.
  *
  * Every failure lands in the same place — `activeTvlUsd: null`,
  * `activeTvlFidelity: 'unavailable'`, REST fields intact. The RPC dependency
  * can cost a venue its rankability; it must never cost it its row, and it must
  * never produce a zero denominator, which would divide into the scoring maths
  * as a measurement of an empty pool.
+ *
+ * The two reads are settled separately because they are independent and unequal.
+ * The bins are the denominator — the expensive part, and the only reason a
+ * Meteora row can be ranked at all — while the candles only sharpen `V_δ` and
+ * `p_exit`, each of which has a defined fallback. So a dead OHLCV endpoint must
+ * not cost a row its bins, and a dead RPC must not cost it its volatility series.
  */
 export async function enrichWithBins(
   pools: readonly NormalizedPool[],
@@ -459,13 +597,48 @@ export async function enrichWithBins(
       const row = wanted.get(pool.poolId);
       if (!row) return pool;
 
+      // Issued together, resolved independently: neither read waits on the other
+      // and neither rejection reaches the other's result.
+      const [reading, candles] = await Promise.all([
+        options.source(pool.poolId, coverageBps).then(
+          (r) => r,
+          () => null,
+        ),
+        options.ranges
+          ? options.ranges(pool.poolId).then(
+              (c) => c,
+              () => [] as MeteoraCandle[],
+            )
+          : Promise.resolve([] as MeteoraCandle[]),
+      ]);
+      const observed = observedRangesFrom(candles);
+
+      /**
+       * The observed half, applied to whatever the bin read leaves behind.
+       *
+       * With no observation this is the identity, so every path below degrades to
+       * exactly what it did before the candles existed.
+       */
+      const withRanges = (p: NormalizedPool): NormalizedPool =>
+        observed === null
+          ? p
+          : {
+              ...p,
+              // Observed band, modelled distribution — the label is still
+              // `modelled-uniform-over-range` because only the width of the band
+              // was measured, never where inside it the flow sat.
+              priceHistogram: modelledPriceHistogram(p.volume24h, observed.bandBps),
+              daily24hRangesBps: observed.daily24hRangesBps,
+            };
+
       try {
-        const reading = await options.source(pool.poolId, coverageBps);
+        // A failed bin read costs the row its denominator and nothing else.
+        if (reading === null) return withRanges(pool);
 
         // The cross-check: `bin_step` is published by the API and stored in the
         // account. If the decode is misaligned, offset 80 cannot agree by luck.
         if (pool.binStep !== undefined && reading.binStep !== pool.binStep) {
-          return pool;
+          return withRanges(pool);
         }
 
         const histogram = histogramFromBins(reading.bins, {
@@ -476,30 +649,32 @@ export async function enrichWithBins(
           priceX: row.token_x.price,
           priceY: row.token_y.price,
         });
-        if (histogram.length === 0) return pool;
+        if (histogram.length === 0) return withRanges(pool);
 
         // Never narrower than one bin — see `coverageFor`.
         const declaredBps = coverageFor(reading.coveredBps, reading.binStep);
         const activeTvlUsd = activeTvlWithin(histogram, declaredBps);
-        if (!(activeTvlUsd > 0)) return pool;
+        if (!(activeTvlUsd > 0)) return withRanges(pool);
 
-        return {
+        return withRanges({
           ...pool,
           activeTvlUsd,
           activeTvlDeltaBps: declaredBps,
           activeTvlFidelity: 'tick-level' as const,
           liquidityHistogram: histogram,
-          // Re-modelled against the width this row actually declares, not the
-          // default the REST pass assumed. `declaredBps` differs whenever
+          // The fallback band only, for a pool whose candles did not arrive:
+          // re-modelled against the width this row actually declares rather than
+          // the default the REST pass assumed. `declaredBps` differs whenever
           // `coverageFor` widened it to a coarse `binStep` or the caller pinned
           // its own `coverageBps`, and a band at or below δ makes `V_δ` the whole
           // of 24h volume — see {@link MODELLED_RANGE_FACTOR}.
           priceHistogram: modelledPriceHistogram(pool.volume24h, modelledRangeFor(declaredBps)),
-        };
+        });
       } catch {
-        // Deliberately swallowed: a dead RPC degrades one venue's fidelity, it
-        // does not fail the scan. `collectPools` catches anything worse.
-        return pool;
+        // Deliberately swallowed: a decode that throws on the way out of a
+        // successful read degrades one venue's fidelity, it does not fail the
+        // scan. `collectPools` catches anything worse.
+        return withRanges(pool);
       }
     }),
   );
