@@ -18,7 +18,14 @@
  */
 
 import type { NormalizedPool } from '@spidey/core';
+import { getJson } from './http.js';
 import { modelledPriceHistogram } from './series.js';
+import {
+  isUsdLikeSymbol,
+  type AdapterContext,
+  type AdapterResult,
+  type VenueAdapter,
+} from './types.js';
 
 export const METEORA_BASE = 'https://dlmm.datapi.meteora.ag';
 const SOLANA_CCTP_DOMAIN = 5;
@@ -128,3 +135,66 @@ export function normalizeMeteoraPool(
     asOf: now,
   };
 }
+
+export const poolsUrl = (page: number, pageSize: number): string =>
+  `${METEORA_BASE}/pools?page=${page}&page_size=${pageSize}`;
+
+export type MeteoraOptions = {
+  /** Rows to request from the API before filtering. */
+  pageSize?: number;
+  /**
+   * Seam for tests. Production passes nothing and the adapter fetches through
+   * the fixture-aware `getJson`.
+   */
+  fetchPools?: (ctx: AdapterContext) => Promise<MeteoraPool[]>;
+};
+
+async function fetchPoolsLive(ctx: AdapterContext, pageSize: number): Promise<MeteoraPool[]> {
+  const body = await getJson<MeteoraPoolsResponse>(poolsUrl(1, pageSize), {
+    namespace: 'meteora',
+    signal: ctx.signal,
+  });
+  return body.data ?? [];
+}
+
+export function createMeteoraAdapter(options: MeteoraOptions = {}): VenueAdapter {
+  const { pageSize = 200, fetchPools } = options;
+
+  return {
+    id: 'meteora',
+    label: 'Meteora (DLMM)',
+    // What the bin reader reaches. Constant-sum bins make this the only venue
+    // that can answer `T_δ` at an arbitrary δ rather than one tick interval.
+    bestFidelity: 'tick-level',
+
+    async listPools(ctx: AdapterContext = {}): Promise<AdapterResult> {
+      const { symbols, limit = 50, now = Date.now() } = ctx;
+      const raw = await (fetchPools ? fetchPools(ctx) : fetchPoolsLive(ctx, pageSize));
+
+      const wanted = symbols?.map((s) => s.toUpperCase());
+      const pools: NormalizedPool[] = [];
+      const skipped: AdapterResult['skipped'] = [];
+
+      for (const row of raw) {
+        if (!row?.address || !row.token_x?.symbol || !row.token_y?.symbol) continue;
+        const pair = [row.token_x.symbol.toUpperCase(), row.token_y.symbol.toUpperCase()];
+        if (wanted && wanted.length > 0) {
+          if (!pair.some((s) => wanted.includes(s))) continue;
+        } else if (!pair.some((s) => isUsdLikeSymbol(s))) {
+          // A USDC vault cannot take directional risk on a memecoin pair
+          // regardless of its headline APR (§7.4).
+          continue;
+        }
+
+        const result = normalizeMeteoraPool(row, now);
+        if ('skip' in result) skipped.push({ poolId: row.address, reason: result.skip });
+        else pools.push(result);
+        if (pools.length >= limit) break;
+      }
+
+      return { pools, skipped };
+    },
+  };
+}
+
+export const meteoraAdapter: VenueAdapter = createMeteoraAdapter();

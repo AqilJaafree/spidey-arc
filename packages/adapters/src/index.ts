@@ -5,18 +5,24 @@
  *
  * | Adapter     | Chain    | activeTVL fidelity      | Key needed |
  * |-------------|----------|-------------------------|------------|
+ * | meteora     | Solana   | tick-level (bins)       | no (RPC)   |
  * | orca        | Solana   | current-tick-liquidity  | no         |
  * | uniswap-v3  | EVM      | current-tick-liquidity  | no (RPC)   |
  * | raydium     | Solana   | unavailable             | no         |
  * | defillama   | many     | unavailable             | no         |
  *
- * Two venues supply a real in-range denominator, which is what §11 Day 1 asks
- * for ("`activeTvlUsd` correct for at least 2"). The other two supply breadth
- * and, by being excluded, the comparison the product argues about.
+ * The fidelity column is what each adapter *can* reach, not what today's rows
+ * carry. Orca and Uniswap v3 supply a real in-range denominator now, which is
+ * what §11 Day 1 asks for ("`activeTvlUsd` correct for at least 2"). Meteora
+ * declares `tick-level` because its constant-sum bins can answer `T_δ` at any
+ * δ, but its rows still report `unavailable` until the bin reader lands.
+ * Raydium and DefiLlama supply breadth and, by being excluded, the comparison
+ * the product argues about.
  */
 
 import type { NormalizedPool } from '@spidey/core';
 import { defiLlamaAdapter, createDefiLlamaAdapter } from './defillama.js';
+import { meteoraAdapter } from './meteora.js';
 import { orcaAdapter } from './orca.js';
 import { raydiumAdapter } from './raydium.js';
 import { createUniswapV3Adapter, uniswapV3Adapter } from './uniswapV3.js';
@@ -25,12 +31,14 @@ import type { AdapterContext, AdapterResult, VenueAdapter } from './types.js';
 export * from './types.js';
 export * from './http.js';
 export * from './series.js';
+export { meteoraAdapter, createMeteoraAdapter, normalizeMeteoraPool, poolsUrl, METEORA_BASE } from './meteora.js';
 export { orcaAdapter } from './orca.js';
 export { raydiumAdapter } from './raydium.js';
 export { defiLlamaAdapter, createDefiLlamaAdapter, fetchLlamaPools, filterLlamaPools, parseFeeTier } from './defillama.js';
 export { uniswapV3Adapter, createUniswapV3Adapter, activeTvlUsdFromState, UNISWAP_CHAINS } from './uniswapV3.js';
 
 export const ALL_ADAPTERS: VenueAdapter[] = [
+  meteoraAdapter,
   orcaAdapter,
   uniswapV3Adapter,
   raydiumAdapter,

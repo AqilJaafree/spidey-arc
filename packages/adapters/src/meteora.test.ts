@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeMeteoraPool, type MeteoraPool } from './meteora.js';
+import {
+  createMeteoraAdapter,
+  meteoraAdapter,
+  METEORA_BASE,
+  normalizeMeteoraPool,
+  poolsUrl,
+  type MeteoraPool,
+} from './meteora.js';
 
 /** The live SOL-USDC row, trimmed to the fields the normalizer reads. */
 const SOL_USDC: MeteoraPool = {
@@ -125,5 +132,48 @@ describe('Meteora pool rejection', () => {
 
   it('skips a pool with no bin_step rather than inventing a granularity', () => {
     expect(skipOf({ ...SOL_USDC, pool_config: { base_fee_pct: 0.04 } })).toMatch(/bin_step/);
+  });
+});
+
+describe('the adapter surface', () => {
+  it('declares the fidelity it can reach with bin data', () => {
+    expect(meteoraAdapter.id).toBe('meteora');
+    expect(meteoraAdapter.bestFidelity).toBe('tick-level');
+  });
+
+  it('builds a paged pools URL', () => {
+    expect(poolsUrl(1, 200)).toBe(`${METEORA_BASE}/pools?page=1&page_size=200`);
+  });
+
+  it('keeps only pools with a USD-like leg, and honours the row cap', async () => {
+    const rows: MeteoraPool[] = [
+      SOL_USDC,
+      { ...SOL_USDC, address: 'B', token_y: { ...SOL_USDC.token_y, symbol: 'BONK' }, token_x: { ...SOL_USDC.token_x, symbol: 'WIF' } },
+      { ...SOL_USDC, address: 'C' },
+    ];
+    const adapter = createMeteoraAdapter({ fetchPools: async () => rows });
+    const { pools } = await adapter.listPools({ symbols: ['USDC'], limit: 2, now: 1 });
+    expect(pools.map((p) => p.poolId)).toEqual([SOL_USDC.address, 'C']);
+  });
+
+  it('falls back to the USD-like shape test when no symbols are asked for', async () => {
+    // The default universe is §7.4's: without an explicit filter the adapter
+    // still refuses a memecoin pair, so this path is not a pass-through.
+    const rows: MeteoraPool[] = [
+      { ...SOL_USDC, address: 'MEME', token_x: { ...SOL_USDC.token_x, symbol: 'WIF' }, token_y: { ...SOL_USDC.token_y, symbol: 'BONK' } },
+      SOL_USDC,
+    ];
+    const adapter = createMeteoraAdapter({ fetchPools: async () => rows });
+    const { pools } = await adapter.listPools({ now: 1 });
+    expect(pools.map((p) => p.poolId)).toEqual([SOL_USDC.address]);
+  });
+
+  it('surfaces rejected pools instead of dropping them silently', async () => {
+    const adapter = createMeteoraAdapter({
+      fetchPools: async () => [{ ...SOL_USDC, address: 'DEAD', tvl: 0 }],
+    });
+    const { pools, skipped } = await adapter.listPools({ now: 1 });
+    expect(pools).toHaveLength(0);
+    expect(skipped).toEqual([{ poolId: 'DEAD', reason: 'no TVL' }]);
   });
 });
