@@ -8,11 +8,15 @@
  *
  *   ARC_RPC_URL=... BASE_RPC_URL=... REPORTER_KEY=0x... pnpm keeper:tick
  *
- * Two jobs. `report-nav` keeps the hub's mark fresh; `sweep-bridges` finishes
- * CCTP transfers nobody finished and tells the vault the money is home. The
- * sweep is second because a NAV mark that goes stale stalls withdrawals on a
- * clock, while an unminted burn waits indefinitely and loses nothing by waiting
- * one more job.
+ * Three jobs. `report-nav` keeps the hub's mark fresh; `settle-epochs` closes a
+ * withdrawal epoch so the requests in it can actually be claimed; `sweep-bridges`
+ * finishes CCTP transfers nobody finished and tells the vault the money is home.
+ *
+ * The order is by what each failure costs. A stale NAV mark stalls withdrawals on
+ * a clock, so it goes first. An unsettled epoch stalls them outright — a holder's
+ * request reverts `EpochNotSettled` forever — but settling is cheap and depends on
+ * nothing, so it only needs to be ahead of the sweep. An unminted burn waits
+ * indefinitely and loses nothing by waiting one more job.
  *
  * Exits non-zero if any job failed, having attempted them all. With
  * KEEPER_READ_ONLY=1 and no key it runs read-only: every read happens and
@@ -24,6 +28,7 @@ import { createPublicClient, createWalletClient, defineChain, http, type Address
 import { privateKeyToAccount } from 'viem/accounts';
 import { baseSepolia } from 'viem/chains';
 import { reportNavJob } from '../jobs/reportNav.js';
+import { settleEpochsJob } from '../jobs/settleEpochs.js';
 import { sweepBridgesJob } from '../jobs/sweepBridges.js';
 import { runJobs, tickExitCode, type Job } from '../tick.js';
 import { reporterMode } from './keys.js';
@@ -123,6 +128,10 @@ async function main() {
     {
       name: 'report-nav',
       run: () => reportNavJob({ arc, base, vault: ARC_VAULT, relay: BASE_RELAY, baseUsdc: BASE_USDC, wallet }),
+    },
+    {
+      name: 'settle-epochs',
+      run: () => settleEpochsJob({ arc, vault: ARC_VAULT, wallet, maxLogRange: ARC_LOG_RANGE }),
     },
     {
       name: 'sweep-bridges',
