@@ -204,6 +204,18 @@ export type PoolFlag =
   | 'modelled-volume-distribution'
   /** No hourly series available, so the §7.6 hygiene layer could not run. */
   | 'no-hygiene-series'
+  /**
+   * No `daily24hRangesBps`, so `p_exit` (§7.4) could not be estimated and is
+   * carried as 0 — which is not a measurement of zero.
+   *
+   * Without this flag an unmeasured exit risk is indistinguishable from a real
+   * one of nil, and the entry condition charges `(δ/2)·p_exit` accordingly. That
+   * makes silence the profitable answer: a venue that publishes no price history
+   * is scored as if its range could never be left, so measuring can only ever
+   * lower a pool's margin. The flag does not fix that asymmetry — it makes it
+   * visible.
+   */
+  | 'no-volatility-series'
   /** `activeTvlUsd` is a single current-tick `L`, exact only in a narrow band. */
   | 'current-tick-liquidity-only';
 
@@ -221,6 +233,8 @@ export const FLAG_EXPLANATIONS: Record<PoolFlag, string> = {
     'In-range volume is modelled from the observed price range, not measured per trade.',
   'no-hygiene-series':
     'No hourly history available, so this score is a point estimate without EWMA or spike filtering.',
+  'no-volatility-series':
+    'No daily price history, so the chance of the price leaving your range was not measured and is counted as zero.',
   'current-tick-liquidity-only':
     'In-range liquidity is the current-tick value, exact only within a narrow band around the price.',
 };

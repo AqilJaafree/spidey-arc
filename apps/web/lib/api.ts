@@ -1,5 +1,15 @@
 /** Client for the scoring engine (`@spidey/api`). */
 
+/**
+ * Mirrors `PoolFlag` in `@spidey/core`. Deliberately a copy rather than an
+ * import: this is an HTTP contract, and the web app should not compile against
+ * the engine's internals to read its JSON.
+ *
+ * The cost of that choice is that adding a flag in `core` does **not** fail this
+ * file's typecheck — `FLAG_LABELS` below is `Record<PoolFlag, string>` over
+ * *this* union, so a new flag arrives as an unlabelled chip instead of a build
+ * error. When `core` gains a flag, it has to be added here by hand.
+ */
 export type PoolFlag =
   | 'no-active-tvl'
   | 'stale'
@@ -11,6 +21,7 @@ export type PoolFlag =
   | 'emissions-dependent'
   | 'modelled-volume-distribution'
   | 'no-hygiene-series'
+  | 'no-volatility-series'
   | 'current-tick-liquidity-only';
 
 export type CompareRow = {
@@ -68,6 +79,7 @@ export async function fetchCompare(
 export const PROVENANCE_FLAGS: ReadonlySet<PoolFlag> = new Set([
   'modelled-volume-distribution',
   'no-hygiene-series',
+  'no-volatility-series',
   'current-tick-liquidity-only',
 ]);
 
@@ -82,5 +94,6 @@ export const FLAG_LABELS: Record<PoolFlag, string> = {
   'emissions-dependent': 'emissions-dependent',
   'modelled-volume-distribution': 'modelled volume',
   'no-hygiene-series': 'point estimate',
+  'no-volatility-series': 'exit risk unmeasured',
   'current-tick-liquidity-only': 'current-tick liquidity',
 };

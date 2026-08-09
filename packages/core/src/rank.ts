@@ -368,10 +368,13 @@ function scorePool(
     flags.push('emissions-dependent');
   }
 
-  const exitProbability24h =
-    pool.daily24hRangesBps && pool.daily24hRangesBps.length > 0
-      ? estimateExitProbability(pool.daily24hRangesBps, deltaBps)
-      : 0;
+  // `0` here is "not measured", not "cannot happen" — and it is the flattering
+  // direction, since `evaluateEntry` charges `(δ/2)·p_exit` against the edge.
+  // `no-volatility-series` below is what keeps the two distinguishable.
+  const measuredRanges = pool.daily24hRangesBps && pool.daily24hRangesBps.length > 0;
+  const exitProbability24h = measuredRanges
+    ? estimateExitProbability(pool.daily24hRangesBps as number[], deltaBps)
+    : 0;
 
   const entry = evaluateEntry({
     feeRate,
@@ -389,6 +392,7 @@ function scorePool(
   // of it was measured and how much was assumed (§6).
   if (pool.priceHistogramSource !== 'observed') flags.push('modelled-volume-distribution');
   if (pool.hourlyFeeSeries.length === 0) flags.push('no-hygiene-series');
+  if (!measuredRanges) flags.push('no-volatility-series');
   if (pool.activeTvlFidelity === 'current-tick-liquidity') {
     flags.push('current-tick-liquidity-only');
   }

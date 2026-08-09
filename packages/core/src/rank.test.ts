@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { rank, venueGranularityBps, othersLiquidityInRange } from './rank.js';
-import type { NormalizedPool } from './types.js';
+import { FLAG_EXPLANATIONS, type NormalizedPool } from './types.js';
 
 const NOW = 1_770_000_000_000;
 
@@ -344,6 +344,45 @@ describe('rank — data provenance travels with the number (§6)', () => {
     expect(row?.flags).not.toContain('modelled-volume-distribution');
     expect(row?.flags).not.toContain('no-hygiene-series');
     expect(row?.flags).not.toContain('current-tick-liquidity-only');
+    expect(row?.flags).not.toContain('no-volatility-series');
+  });
+});
+
+describe('rank — an unmeasured exit risk is not a zero exit risk', () => {
+  /**
+   * `estimateExitProbability` only runs on `daily24hRangesBps`, so a pool
+   * without one is scored as if its range could never be left — the most
+   * flattering value available, and indistinguishable in the output from a pool
+   * genuinely measured at zero. Same shape as `no-hygiene-series`: the flag
+   * says the term was not measured, not that it is nil.
+   */
+  it('flags a pool that supplied no daily ranges', () => {
+    const row = rank([pool({ poolId: 'blind', daily24hRangesBps: undefined })], {
+      depositUsd: 10_000,
+      now: NOW,
+    }).ranked[0];
+    expect(row?.flags).toContain('no-volatility-series');
+  });
+
+  it('flags an empty series too, since it measures nothing', () => {
+    const row = rank([pool({ poolId: 'empty', daily24hRangesBps: [] })], {
+      depositUsd: 10_000,
+      now: NOW,
+    }).ranked[0];
+    expect(row?.flags).toContain('no-volatility-series');
+  });
+
+  it('does not flag a pool that measured its ranges, even if they are tiny', () => {
+    // A genuine measurement of near-zero volatility is a finding, not a gap.
+    const row = rank([pool({ poolId: 'calm', daily24hRangesBps: [0.5, 0.4, 0.6] })], {
+      depositUsd: 10_000,
+      now: NOW,
+    }).ranked[0];
+    expect(row?.flags).not.toContain('no-volatility-series');
+  });
+
+  it('carries a user-facing explanation, like every other flag', () => {
+    expect(FLAG_EXPLANATIONS['no-volatility-series']).toMatch(/not measured|no .*series|unmeasured/i);
   });
 });
 
