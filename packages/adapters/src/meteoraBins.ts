@@ -135,6 +135,50 @@ export type BinPricing = {
 };
 
 /**
+ * Both legs priceable, or neither is.
+ *
+ * The per-bin `Number.isFinite(liquidityUsd) && liquidityUsd > 0` filter in
+ * {@link histogramFromBins} catches *both* prices being unusable; it cannot
+ * catch *one*. With `priceY > 0` and `priceX === 0` every bin is valued on its
+ * Y side alone, the histogram comes back non-empty, and the row publishes as
+ * `activeTvlFidelity: 'tick-level'` with its full declared coverage over half a
+ * denominator. Zero is the case already caught. A half is the one that
+ * flatters, and it flatters by however much of the pool sits in the unpriced
+ * leg — `enrichWithBins` promises never to produce a zero denominator, and a
+ * partial one is worse than the case that promise names.
+ *
+ * This is reachable from live data, not hypothetical: the recorded REST page
+ * carries `Cc2duQx11dv3YW5pWAjXE37RJYPkXsjaswzEHyheqgRR` (XMR-USDT) with
+ * `token_x.price: 0`. It holds $18 so it never clears the enrichment floors
+ * today, and nothing here depends on that — a pool with a large USDC side and
+ * an unpriced counter-token reports `tvl` from the USDC side alone, clears $1M,
+ * and gets read.
+ *
+ * Throwing rather than returning an empty histogram: both degrade the row to
+ * `'unavailable'` through `enrichWithBins`' catch, but empty also means "no
+ * funded bins in range", and a caller must not read "cannot value these bins"
+ * as "this range is empty".
+ */
+function requireUsablePricing(pricing: BinPricing): void {
+  for (const [what, price] of [
+    ['priceX', pricing.priceX],
+    ['priceY', pricing.priceY],
+  ] as const) {
+    if (!Number.isFinite(price) || price <= 0) {
+      throw new RangeError(`unusable ${what} (${price}): a bin cannot be valued on one leg`);
+    }
+  }
+  for (const [what, decimals] of [
+    ['decimalsX', pricing.decimalsX],
+    ['decimalsY', pricing.decimalsY],
+  ] as const) {
+    if (!Number.isInteger(decimals) || decimals < 0) {
+      throw new RangeError(`unusable ${what} (${decimals}): cannot scale raw amounts`);
+    }
+  }
+}
+
+/**
  * Funded bins → a liquidity-by-distance-from-peg histogram.
  *
  * Empty bins are dropped rather than emitted as zero buckets: the consumer
@@ -142,11 +186,16 @@ export type BinPricing = {
  * the payload. A consequence worth knowing downstream — the outermost bucket
  * is therefore *not* the measured width, so coverage has to be declared
  * separately rather than inferred from this array.
+ *
+ * Refuses outright on unusable pricing rather than valuing what it can — see
+ * {@link requireUsablePricing} for why a half-priced bin is the dangerous case.
  */
 export function histogramFromBins(
   bins: readonly IdentifiedBin[],
   pricing: BinPricing,
 ): LiquidityHistogramBucket[] {
+  requireUsablePricing(pricing);
+
   const scaleX = 10 ** pricing.decimalsX;
   const scaleY = 10 ** pricing.decimalsY;
 

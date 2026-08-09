@@ -391,6 +391,45 @@ describe('enrichWithBins', () => {
     expect(p!.activeTvlFidelity).toBe('unavailable');
   });
 
+  /**
+   * The one-legged denominator, end to end.
+   *
+   * The recorded page carries XMR-USDT with `token_x.price: 0`; it holds $18, so
+   * the floors keep it away from the RPC today. The shape is what matters, and
+   * nothing in the code depends on the size: this row is the same shape scaled
+   * up — a large unpriced X leg beside a priced Y leg, `tvl` reported off the
+   * priced side, comfortably past every floor. Valuing the bin on Y alone gives
+   * $2,000 against $102,000 of actual bin contents, a denominator 51x too small,
+   * published at `tick-level` with full declared coverage.
+   */
+  it('degrades a pool with an unpriced leg instead of halving its denominator', async () => {
+    const unpriced: MeteoraPool = {
+      ...SOL_USDC,
+      address: 'XMR-LIKE',
+      token_x: { address: 'x', symbol: 'XMR', decimals: 6, price: 0 },
+      token_y: { address: 'y', symbol: 'USDT', decimals: 6, price: 0.9989711407754004 },
+      tvl: 4_000_000,
+    };
+    const normalized = normalizeMeteoraPool(unpriced, 1);
+    if ('skip' in normalized) throw new Error('fixture should normalize');
+
+    const oneLegged: BinSource = async () => ({
+      activeId: 0,
+      binStep: 4,
+      // 500 XMR at ~$200 plus 2,000 USDT: $102,000 of bin, $2,000 of it priced.
+      bins: [{ binId: 0, amountX: 500n * 10n ** 6n, amountY: 2_000n * 10n ** 6n }],
+      coveredBps: 500,
+    });
+
+    const [p] = await enrichWithBins([normalized], { source: oneLegged, rows: [unpriced] });
+    expect(p!.activeTvlFidelity).toBe('unavailable');
+    expect(p!.activeTvlUsd).toBeNull();
+    expect(p!.activeTvlDeltaBps).toBeNull();
+    expect(p!.liquidityHistogram).toBeUndefined();
+    // The row survives at REST fidelity, as every other enrichment failure does.
+    expect(p!.tvlUsd).toBe(4_000_000);
+  });
+
   it('never declares coverage narrower than one bin', async () => {
     // Otherwise `resolveDeltaBps` clamps δ up to binStep, overshoots the
     // declared width, and rank.ts excludes the pool — invisibly.

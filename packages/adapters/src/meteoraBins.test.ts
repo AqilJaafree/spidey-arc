@@ -185,6 +185,50 @@ describe('histogramFromBins', () => {
    * raw units across bins, or handled an 18-decimal mint, it would cross that
    * ceiling and quietly understate the denominator instead of failing.
    */
+  /**
+   * The half-denominator bug, as a regression test.
+   *
+   * The per-bin finiteness filter catches both prices being bad and cannot
+   * catch one. Valuing on the priced leg alone returns a non-empty histogram,
+   * so the row publishes at `tick-level` with full declared coverage over a
+   * denominator missing everything in the unpriced leg — the flattering
+   * direction. Delete `requireUsablePricing` and every expectation below fails.
+   */
+  it('refuses to value a bin on one leg when the other has no price', () => {
+    const oneLegged = { ...priced, priceX: 0 };
+    const bin = { binId: 0, amountX: 10n ** 6n * 10n ** 9n, amountY: 50n * 10n ** 6n };
+
+    expect(() => histogramFromBins([bin], oneLegged)).toThrow(/priceX/);
+    // Not merely "does not throw for the good case" — the Y side alone is a
+    // number that looks entirely plausible, which is what makes it dangerous.
+    expect(histogramFromBins([bin], priced)[0]!.liquidityUsd).toBeCloseTo(100_000_050, 3);
+  });
+
+  it('refuses an unpriced Y leg too, not just X', () => {
+    expect(() =>
+      histogramFromBins([{ binId: 0, amountX: 10n ** 9n, amountY: 10n ** 6n }], { ...priced, priceY: 0 }),
+    ).toThrow(/priceY/);
+  });
+
+  it('refuses a non-finite price rather than emitting NaN buckets', () => {
+    const bin = { binId: 0, amountX: 10n ** 9n, amountY: 0n };
+    expect(() => histogramFromBins([bin], { ...priced, priceX: Number.NaN })).toThrow(/priceX/);
+    expect(() => histogramFromBins([bin], { ...priced, priceY: Number.POSITIVE_INFINITY })).toThrow(
+      /priceY/,
+    );
+  });
+
+  it('refuses decimals it cannot scale by', () => {
+    const bin = { binId: 0, amountX: 10n ** 9n, amountY: 10n ** 6n };
+    expect(() => histogramFromBins([bin], { ...priced, decimalsX: Number.NaN })).toThrow(/decimalsX/);
+    expect(() => histogramFromBins([bin], { ...priced, decimalsY: -1 })).toThrow(/decimalsY/);
+    // `undefined` reaches here whenever an API row omits the field, and
+    // `10 ** undefined` is NaN — a silent whole-histogram wipe otherwise.
+    expect(() =>
+      histogramFromBins([bin], { ...priced, decimalsY: undefined as unknown as number }),
+    ).toThrow(/decimalsY/);
+  });
+
   it('converts a whale-sized amountX without losing precision', () => {
     const raw = 10n ** 6n * 10n ** 9n; // 1,000,000 tokens at 9 decimals
     expect(raw).toBeLessThan(BigInt(Number.MAX_SAFE_INTEGER));
