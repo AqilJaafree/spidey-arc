@@ -243,6 +243,16 @@ export type MeteoraOptions = {
   fetchPools?: (ctx: AdapterContext) => Promise<MeteoraPool[]>;
   /** Pools to enrich with bin data. 0 disables the RPC path entirely. */
   topK?: number;
+  /**
+   * Half-width the bin reader tries to cover, bps. Defaults to
+   * {@link DEFAULT_BIN_COVERAGE_BPS}.
+   *
+   * This is a floor, not the final word: `coverageFor` raises it to one
+   * `binStep` when a pool's bins are coarser, because a row declaring less
+   * coverage than its own granularity excludes itself from the ranking. So the
+   * width a row ends up reporting in `activeTvlDeltaBps` can exceed what is
+   * asked for here, and never falls below it.
+   */
   coverageBps?: number;
   /**
    * Overrides `SOLANA_RPC_URL`, which overrides the public endpoint.

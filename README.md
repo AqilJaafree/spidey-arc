@@ -60,7 +60,7 @@ Live data, at the time of writing:
 | SOL/USDC | Meteora (DLMM) | $5.03M | $945k (±100bp) | 18.8% |
 | USDC/USDT | Orca | $1.18M | $638k (±1bp) | 53.9% |
 
-From 0.45% to 54% depending on venue and range width — which is precisely why one headline number cannot rank these. The two Meteora rows are the same venue, the same day and the same query: one pool holds 18.8% of its headline TVL within a percent of the price, the other 3.7% within five percent.
+From 0.45% to 54% depending on venue and range width — which is precisely why one headline number cannot rank these. Read the width column, not just the share: every row is quoted at the width that venue actually measures, so these are five different questions, not one. The two Meteora rows make the point twice over — same venue, same minute, and still 18.8% against 3.74%, because one is asked within a percent of the price and the other within five. Widen SOL/USDC to that same ±500bp and it reads 54.81%, which would put it top of this table; narrow it and it falls. The share is meaningless without the width it was measured over, which is why `activeTvlDeltaBps` travels with every number the ranker uses.
 
 Meteora is the one venue that measures both widths on the same pool, because its bins are read individually. All eight enriched rows from one capture:
 
