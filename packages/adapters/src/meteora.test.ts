@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   createMeteoraAdapter,
   meteoraAdapter,
@@ -175,5 +175,43 @@ describe('the adapter surface', () => {
     const { pools, skipped } = await adapter.listPools({ now: 1 });
     expect(pools).toHaveLength(0);
     expect(skipped).toEqual([{ poolId: 'DEAD', reason: 'no TVL' }]);
+  });
+});
+
+/**
+ * The whole recorded page through the real `getJson` path, offline.
+ *
+ * Every other test above injects rows through the `fetchPools` seam, so none of
+ * them would notice the live endpoint moving again or the response shape
+ * changing. This one replays `fixtures/meteora/` and fails with
+ * `FixtureMissingError` if the capture is missing, which is the point.
+ */
+describe('replaying the recorded response', () => {
+  // Process-wide, so put it back: `fetchMode()` reads the variable, not a
+  // module-local, and a leaked 'fixture' would silently change how any later
+  // test in this file resolves a URL.
+  const previousMode = process.env.SPIDEY_FETCH_MODE;
+
+  beforeAll(() => {
+    process.env.SPIDEY_FETCH_MODE = 'fixture';
+  });
+
+  afterAll(() => {
+    if (previousMode === undefined) delete process.env.SPIDEY_FETCH_MODE;
+    else process.env.SPIDEY_FETCH_MODE = previousMode;
+  });
+
+  it('normalizes the captured page without skipping everything', async () => {
+    const { pools, skipped } = await meteoraAdapter.listPools({ symbols: ['USDC'], limit: 60 });
+    expect(pools.length).toBeGreaterThan(0);
+    for (const p of pools) {
+      expect(p.dex).toBe('meteora-dlmm');
+      expect(p.binStep).toBeGreaterThan(0);
+      expect(p.tvlUsd).toBeGreaterThan(0);
+      expect(p.apyBase).toBeGreaterThanOrEqual(0);
+      expect(p.activeTvlFidelity).toBe('unavailable');
+    }
+    // Rejections are reported, not hidden.
+    for (const s of skipped) expect(s.reason).toBeTruthy();
   });
 });
