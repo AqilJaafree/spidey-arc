@@ -80,7 +80,10 @@ export type ChainName = keyof typeof CCTP_DOMAIN | (string & {});
 export type ActiveTvlFidelity =
   /**
    * Real per-tick or per-bin liquidity, summed across the range. Valid at any
-   * δ. Meteora (constant-sum bins) and a v3 subgraph's `liquidityNet` series.
+   * δ *within the width it was measured over*, which the adapter must state in
+   * `activeTvlDeltaBps` — a per-bin series is only as wide as the bins actually
+   * fetched, and the ranker refuses to read it wider. Meteora (constant-sum
+   * bins) and a v3 subgraph's `liquidityNet` series.
    */
   | 'tick-level'
   /**
@@ -117,7 +120,15 @@ export type NormalizedPool = {
    * `null` means the venue could not supply it: exclude, do not approximate.
    */
   activeTvlUsd: number | null;
-  /** The range half-width `activeTvlUsd` was measured over, basis points. */
+  /**
+   * The range half-width the in-range liquidity was measured over, basis
+   * points — for `activeTvlUsd`, and equally for `liquidityHistogram` when one
+   * is supplied. It is the width the measurement is *trusted* to, not merely a
+   * label: the ranker will not answer a question wider than this, because a
+   * narrow total returned as a wide one understates `T_δ` and overstates the
+   * depositor's yield. `null` here means an unusable denominator, histogram or
+   * not.
+   */
   activeTvlDeltaBps: number | null;
   /** How that number was obtained. Drives how far it can be trusted. */
   activeTvlFidelity: ActiveTvlFidelity;
@@ -147,7 +158,13 @@ export type NormalizedPool = {
    * assumption behind 'modelled-uniform-over-range'.
    */
   priceHistogramSource: 'observed' | 'modelled-uniform-over-range' | 'none';
-  /** Liquidity by distance from peg. Drives `T_δ` at an arbitrary δ. */
+  /**
+   * Liquidity by distance from peg. Drives `T_δ` at any δ up to the coverage
+   * declared in `activeTvlDeltaBps`, which a producer of this field must set to
+   * the width it really collected; past that the pool is excluded rather than
+   * answered from bins that were never fetched. Bins holding nothing may be
+   * omitted, so the outermost bucket is not the coverage — declare it.
+   */
   liquidityHistogram?: LiquidityHistogramBucket[];
   /** Hourly fee APR, oldest first. 168 buckets = 7 days (§7.6). */
   hourlyFeeSeries: number[];

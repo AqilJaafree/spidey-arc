@@ -211,9 +211,10 @@ export function othersLiquidityInRange(
     // as the `activeTvlUsd` branch below, and the same flag.
     //
     // The check is one-sided where the scalar branch's is two-sided: a
-    // histogram can always answer a *narrower* question exactly by summing
-    // fewer buckets, whereas rescaling a single scalar is unsound in either
-    // direction.
+    // *narrower* question is answered by summing fewer buckets — exact to bin
+    // granularity, since inclusion is whole-bucket and a δ falling mid-bin
+    // takes that bin or leaves it — whereas rescaling a single scalar is
+    // unsound in either direction.
     if (pool.activeTvlDeltaBps === null) return { value: null, flag: 'range-width-mismatch' };
     if (deltaBps > pool.activeTvlDeltaBps) return { value: null, flag: 'range-width-mismatch' };
 
@@ -232,6 +233,24 @@ export function othersLiquidityInRange(
     return { value: null, flag: 'range-width-mismatch' };
   }
   return { value: pool.activeTvlUsd, flag: null };
+}
+
+/**
+ * Why a pool with no usable `T_δ` dropped out, in the depositor's terms.
+ *
+ * A venue that never stated the width its in-range liquidity covers is a
+ * different failure from one that stated an incompatible width, and the two
+ * share the `range-width-mismatch` flag — so the sentence has to tell them
+ * apart rather than interpolating a `null` width into "±nullbp".
+ */
+function noDenominatorReason(pool: NormalizedPool, flag: PoolFlag, deltaBps: number): string {
+  if (flag === 'no-active-tvl') {
+    return `${pool.dex} did not supply in-range liquidity; excluded rather than approximated.`;
+  }
+  if (pool.activeTvlDeltaBps === null) {
+    return `${pool.dex} did not state the range width its in-range liquidity covers, so it cannot be read at ±${deltaBps}bp; excluded rather than assumed.`;
+  }
+  return `${pool.dex} reported in-range liquidity at ±${pool.activeTvlDeltaBps}bp, not ±${deltaBps}bp; excluded rather than rescaled.`;
 }
 
 function effectiveFeeBps(pool: NormalizedPool): number {
@@ -307,14 +326,7 @@ function scorePool(
   const { value: tDelta, flag: liquidityFlag } = othersLiquidityInRange(pool, deltaBps);
   if (tDelta === null) {
     const flag = liquidityFlag ?? 'no-active-tvl';
-    return excludedRow(
-      pool,
-      deltaBps,
-      [flag],
-      flag === 'no-active-tvl'
-        ? `${pool.dex} did not supply in-range liquidity; excluded rather than approximated.`
-        : `${pool.dex} reported in-range liquidity at ±${pool.activeTvlDeltaBps}bp, not ±${deltaBps}bp; excluded rather than rescaled.`,
-    );
+    return excludedRow(pool, deltaBps, [flag], noDenominatorReason(pool, flag, deltaBps));
   }
 
   const feeBps = effectiveFeeBps(pool);

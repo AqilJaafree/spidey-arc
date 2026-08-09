@@ -217,41 +217,60 @@ describe('rank — T_δ sourcing', () => {
   });
 });
 
-describe('a histogram is only trusted as wide as it was measured', () => {
-  /** Covers ±100bps: three buckets, $1,000 each. */
-  const narrowHistogram = {
-    activeTvlUsd: 3_000,
-    activeTvlDeltaBps: 100,
-    activeTvlFidelity: 'tick-level' as const,
-    liquidityHistogram: [
-      { bpsFromPeg: -100, liquidityUsd: 1_000 },
-      { bpsFromPeg: 0, liquidityUsd: 1_000 },
-      { bpsFromPeg: 100, liquidityUsd: 1_000 },
-    ],
-  };
+describe('rank — a histogram is only trusted as wide as it was measured', () => {
+  /** Declares ±100bp of coverage: three buckets, $1,000 each. */
+  const narrow = () =>
+    pool({
+      poolId: 'narrow',
+      activeTvlUsd: 3_000,
+      activeTvlDeltaBps: 100,
+      liquidityHistogram: [
+        { bpsFromPeg: -100, liquidityUsd: 1_000 },
+        { bpsFromPeg: 0, liquidityUsd: 1_000 },
+        { bpsFromPeg: 100, liquidityUsd: 1_000 },
+      ],
+    });
 
   it('sums the histogram inside the width it covers', () => {
-    const p = { ...pool({ poolId: 'narrow' }), ...narrowHistogram };
-    expect(othersLiquidityInRange(p, 100)).toEqual({ value: 3_000, flag: null });
-    expect(othersLiquidityInRange(p, 50)).toEqual({ value: 1_000, flag: null });
+    expect(othersLiquidityInRange(narrow(), 100)).toEqual({ value: 3_000, flag: null });
+    expect(othersLiquidityInRange(narrow(), 50)).toEqual({ value: 1_000, flag: null });
   });
 
   it('refuses to answer wider than it measured, rather than under-reporting', () => {
     // The dangerous direction: returning 3,000 here would understate T_δ, which
     // overstates your share of the pool and therefore your APR.
-    const p = { ...pool({ poolId: 'narrow' }), ...narrowHistogram };
-    expect(othersLiquidityInRange(p, 500)).toEqual({
+    expect(othersLiquidityInRange(narrow(), 500)).toEqual({
       value: null,
       flag: 'range-width-mismatch',
     });
   });
 
   it('still refuses when a histogram arrives with no declared width', () => {
-    const p = { ...pool({ poolId: 'narrow' }), ...narrowHistogram, activeTvlDeltaBps: null };
+    const p = { ...narrow(), activeTvlDeltaBps: null };
     expect(othersLiquidityInRange(p, 10)).toEqual({
       value: null,
       flag: 'range-width-mismatch',
     });
+  });
+
+  it('answers within a declared width the buckets do not reach', () => {
+    // Empty bins may be omitted, so the outermost bucket is NOT the coverage:
+    // declaring ±500bp while carrying nothing past ±100bp says "measured that
+    // far, found nothing out there". Declaring honestly is the adapter's job,
+    // and the ranker takes the declaration rather than re-deriving it from the
+    // bucket list — which would refuse a legitimately sparse histogram.
+    const p = { ...narrow(), activeTvlDeltaBps: 500 };
+    expect(othersLiquidityInRange(p, 300)).toEqual({ value: 3_000, flag: null });
+  });
+
+  it('tells a depositor a width was never declared, rather than printing ±nullbp', () => {
+    const p = { ...narrow(), activeTvlDeltaBps: null };
+    const result = rank([p], { depositUsd: 10_000, now: NOW });
+    expect(result.excluded[0]?.flags).toContain('range-width-mismatch');
+    expect(result.excluded[0]?.reason).toBe(
+      'uniswap-v3 did not state the range width its in-range liquidity covers, so it cannot be read at ±10bp; excluded rather than assumed.',
+    );
+    expect(result.excluded[0]?.reason).not.toMatch(/null/);
   });
 });
 
