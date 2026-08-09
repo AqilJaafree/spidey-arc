@@ -26,7 +26,9 @@ import {
   binsNeededFor,
   decodeBinArrayAmounts,
   decodeBinArrayIndex,
+  decodeLbPairSlice,
   histogramFromBins,
+  LB_PAIR_SLICE,
   type IdentifiedBin,
 } from './meteoraBins.js';
 import { modelledPriceHistogram } from './series.js';
@@ -425,13 +427,13 @@ export function createRpcBinSource(options: SolanaRpcOptions = {}): BinSource {
   return async (poolId, coverageBps) => {
     const [pairBytes] = await getMultipleAccounts([poolId], {
       ...options,
-      // active_id @76 and bin_step @80 — six bytes out of 904.
-      dataSlice: { offset: 76, length: 6 },
+      // Six bytes out of 904 — a deliberate optimisation, so the decode comes
+      // from `decodeLbPairSlice` rather than `decodeLbPair`, and both take their
+      // offsets from the same two constants.
+      dataSlice: LB_PAIR_SLICE,
     });
-    if (!pairBytes || pairBytes.length !== 6) throw new Error(`no LbPair account for ${poolId}`);
-    const view = new DataView(pairBytes.buffer, pairBytes.byteOffset, pairBytes.byteLength);
-    const activeId = view.getInt32(0, true);
-    const binStep = view.getUint16(4, true);
+    if (!pairBytes) throw new Error(`no LbPair account for ${poolId}`);
+    const { activeId, binStep } = decodeLbPairSlice(pairBytes);
 
     const covered = coverageFor(coverageBps, binStep);
     const reach = binsNeededFor(covered, binStep);

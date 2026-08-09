@@ -4,6 +4,7 @@ import {
   BINS_PER_ARRAY,
   BIN_SIZE,
   LB_PAIR_SIZE,
+  LB_PAIR_SLICE,
   activeTvlWithin,
   arrayIndexOf,
   binIdOf,
@@ -12,6 +13,7 @@ import {
   decodeBinArrayAmounts,
   decodeBinArrayIndex,
   decodeLbPair,
+  decodeLbPairSlice,
   histogramFromBins,
 } from './meteoraBins.js';
 
@@ -46,6 +48,40 @@ describe('decodeLbPair', () => {
   it('refuses a wrong-sized account rather than reading past the end', () => {
     expect(() => decodeLbPair(new Uint8Array(903))).toThrow(/904/);
     expect(() => decodeLbPair(new Uint8Array(905))).toThrow(/904/);
+  });
+});
+
+/**
+ * The slice decoder is what production actually calls — the RPC read asks for
+ * six bytes, so `decodeLbPair` cannot be used on it. These tests exist to keep
+ * the two from drifting: both take their offsets from the same constants, and
+ * the agreement assertion is what an IDL move would break loudly instead of
+ * leaving the production path reading offset 76 by hand.
+ */
+describe('decodeLbPairSlice', () => {
+  it('slices exactly the two fields, derived from their offsets', () => {
+    expect(LB_PAIR_SLICE).toEqual({ offset: 76, length: 6 });
+  });
+
+  it('agrees with decodeLbPair on the same account', () => {
+    for (const [activeId, binStep] of [
+      [-6440, 4],
+      [12_345, 25],
+      [0, 1],
+    ] as const) {
+      const whole = lbPairBytes(activeId, binStep);
+      const slice = whole.subarray(LB_PAIR_SLICE.offset, LB_PAIR_SLICE.offset + LB_PAIR_SLICE.length);
+      // `subarray` shares the parent buffer, which is the trap `viewOf` names:
+      // a bare `new DataView(bytes.buffer)` here would read offset 0 of the
+      // whole 904-byte account and get zeros.
+      expect(decodeLbPairSlice(slice)).toEqual(decodeLbPair(whole));
+      expect(decodeLbPairSlice(slice)).toEqual({ activeId, binStep });
+    }
+  });
+
+  it('refuses a slice of the wrong length rather than reading past the end', () => {
+    expect(() => decodeLbPairSlice(new Uint8Array(5))).toThrow(/6 bytes/);
+    expect(() => decodeLbPairSlice(new Uint8Array(904))).toThrow(/6 bytes/);
   });
 });
 

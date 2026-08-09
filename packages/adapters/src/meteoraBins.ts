@@ -62,6 +62,40 @@ export function decodeLbPair(bytes: Uint8Array): LbPairState {
   };
 }
 
+/**
+ * The `dataSlice` that carries both fields and nothing else: six bytes out of
+ * 904, `active_id` (i32) immediately followed by `bin_step` (u16).
+ *
+ * Derived from the two offsets rather than written down, because the production
+ * read is the slice and not the whole account — see {@link decodeLbPairSlice}.
+ */
+export const LB_PAIR_SLICE = {
+  offset: LB_PAIR_ACTIVE_ID_OFFSET,
+  length: LB_PAIR_BIN_STEP_OFFSET + 2 - LB_PAIR_ACTIVE_ID_OFFSET,
+};
+
+/**
+ * The same two fields, out of {@link LB_PAIR_SLICE} rather than the whole
+ * account.
+ *
+ * This exists so the offsets have exactly one home. The bin reader asks the RPC
+ * for six bytes, so it cannot call {@link decodeLbPair}, and it used to
+ * re-hardcode `offset: 76` with sub-offsets `0` and `4` inline — which left
+ * `decodeLbPair`, `LB_PAIR_SIZE` and both offset constants with no consumer
+ * outside the tests. An IDL that moved would have had the constants and their
+ * tests updated while the production path went on reading offset 76.
+ *
+ * The sub-offsets are differences against `LB_PAIR_SLICE.offset`, so moving
+ * either field moves the slice, the request and the decode together.
+ */
+export function decodeLbPairSlice(bytes: Uint8Array): LbPairState {
+  const view = viewOf(bytes, LB_PAIR_SLICE.length, 'LbPair slice');
+  return {
+    activeId: view.getInt32(LB_PAIR_ACTIVE_ID_OFFSET - LB_PAIR_SLICE.offset, true),
+    binStep: view.getUint16(LB_PAIR_BIN_STEP_OFFSET - LB_PAIR_SLICE.offset, true),
+  };
+}
+
 /** Signed — pools below their initial price have negative array indices. */
 export function decodeBinArrayIndex(bytes: Uint8Array): number {
   const view = viewOf(bytes, BIN_ARRAY_SIZE, 'BinArray');
