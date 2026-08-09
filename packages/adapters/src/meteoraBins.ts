@@ -111,17 +111,52 @@ export function bpsFromPeg(binId: number, activeId: number, binStep: number): nu
 }
 
 /**
- * Bins either side needed to cover `deltaBps`. Inverse of {@link bpsFromPeg}.
+ * Bins either side needed to cover `deltaBps`, on the side that binds.
+ *
+ * The inverse of {@link bpsFromPeg} is one-sided, which is the whole subtlety.
+ * `k` bins reach `(1+s)^k − 1` above the peg but only `1 − (1+s)^−k` below it,
+ * and the downside is always the smaller of the two. Solving the upside —
+ * `ceil(log1p(δ/1e4) / log1p(s))`, which this function used to do — returns a
+ * count that covers δ up and falls short of it down:
+ *
+ *     binStep   1  ->  488 bins, +500.08 / -476.26   short by 23.74bp
+ *     binStep   4  ->  122 bins, +500.00 / -476.19   short by 23.81bp
+ *     binStep  10  ->   49 bins, +501.95 / -477.96   short by 22.04bp
+ *     binStep  20  ->   25 bins, +512.19 / -487.23   short by 12.77bp
+ *     binStep  50  ->   10 bins, +511.40 / -486.52   short by 13.48bp
+ *
+ * The fetched bins are then declared as `activeTvlDeltaBps: 500`, so
+ * `othersLiquidityInRange` sums at ±500 over bins that were never read below
+ * −476. Worth 0.5–2.2% of `T_δ` on the recorded fixtures — and always in the
+ * same direction, because the missing bins can only make the denominator
+ * smaller, which makes the APR larger.
+ *
+ * So solve the downside: `1 − (1+s)^−k >= δ/1e4`, i.e.
+ * `k = ceil(−log1p(−δ/1e4) / log1p(s))`. Covering the downside covers the
+ * upside for free, so this is the inverse the docblock always claimed to be.
  *
  * `Math.log1p` rather than `Math.log(1 + x)`: at a 1bp `binStep` the argument
  * is 1e-4, where the naive form loses significant digits in the subtraction
  * and can round the bin count down — under-fetching the very edge of the range.
  * `ceil` then guarantees the returned count *covers* delta rather than falling
  * just inside it.
+ *
+ * A δ of 10,000bp or wider is refused rather than clamped or looped: a
+ * geometric ladder's downside asymptotes at −10,000bp, which is a price of
+ * zero, so no `k` reaches it. The arithmetic agrees but says so unhelpfully —
+ * `−log1p(−1)` is `Infinity` and `−log1p(−1.5)` is `NaN`, and both propagate
+ * through `arrayIndexOf` into a bin-array filter that matches nothing, so the
+ * refusal arrives three RPC calls later wearing the wrong error. Throwing here
+ * degrades the row to `unavailable` naming the width nobody can answer.
  */
 export function binsNeededFor(deltaBps: number, binStep: number): number {
   if (!(deltaBps > 0)) return 1;
-  const k = Math.ceil(Math.log1p(deltaBps / 10_000) / Math.log1p(binStep / 10_000));
+  if (deltaBps >= 10_000) {
+    throw new RangeError(
+      `no bin count covers ±${deltaBps}bp: a bin ladder's downside asymptotes at -10000bp`,
+    );
+  }
+  const k = Math.ceil(-Math.log1p(-deltaBps / 10_000) / Math.log1p(binStep / 10_000));
   return Math.max(1, k);
 }
 

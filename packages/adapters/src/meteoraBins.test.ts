@@ -122,16 +122,64 @@ describe('bin identity and geometry', () => {
     expect(Math.abs(bpsFromPeg(-1, 0, 4))).toBeCloseTo(4.0, 1);
   });
 
-  it('inverts to the bin count a width needs', () => {
-    expect(binsNeededFor(500, 4)).toBe(122);
-    expect(binsNeededFor(100, 4)).toBe(25);
+  /**
+   * The property, not a number.
+   *
+   * This test used to pin `binsNeededFor(500, 4) === 122` — the exact value that
+   * embedded the bug, so it locked the asymmetry in rather than catching it. 122
+   * bins at a 4bp step span −476.19..500.00, and the row that carried them
+   * declared ±500bp. What the docblock claims is a property, so assert the
+   * property: the count must cover δ on *both* sides, and the binding side is
+   * the downside, since `1 − (1+s)^−k` is always smaller than `(1+s)^k − 1`.
+   */
+  it('covers the width on both sides, downside included', () => {
+    for (const binStep of [1, 2, 4, 10, 20, 25, 50, 80, 100, 400]) {
+      for (const deltaBps of [4, 20, 50, 100, 250, 500, 1_000, 2_500, 9_000]) {
+        const k = binsNeededFor(deltaBps, binStep);
+        // The side the old formula satisfied.
+        expect(bpsFromPeg(k, 0, binStep)).toBeGreaterThanOrEqual(deltaBps);
+        // The side it did not. This is the assertion that fails on the old code.
+        expect(Math.abs(bpsFromPeg(-k, 0, binStep))).toBeGreaterThanOrEqual(deltaBps);
+      }
+    }
+  });
+
+  it('asks for no more bins than the downside needs', () => {
+    // Minimality matters as much as sufficiency: this is an RPC budget, and
+    // `arrayIndexOf` turns every extra bin into a possible extra 10KB account.
+    for (const binStep of [1, 4, 10, 20, 50, 100]) {
+      for (const deltaBps of [20, 100, 500, 2_500]) {
+        const k = binsNeededFor(deltaBps, binStep);
+        if (k <= 1) continue;
+        expect(Math.abs(bpsFromPeg(-(k - 1), 0, binStep))).toBeLessThan(deltaBps);
+      }
+    }
+  });
+
+  /** Regression anchors, derived from the corrected formula rather than measured off it. */
+  it('pins the counts the default coverage actually costs', () => {
+    // Was 122 under the upside solution, which is 7 bins short below the peg.
+    expect(binsNeededFor(500, 4)).toBe(129);
+    expect(binsNeededFor(500, 1)).toBe(513);
+    expect(binsNeededFor(100, 4)).toBe(26);
     expect(binsNeededFor(50, 4)).toBe(13);
-    expect(binsNeededFor(20, 4)).toBe(5);
+    expect(binsNeededFor(20, 4)).toBe(6);
   });
 
   it('never asks for fewer than one bin', () => {
     expect(binsNeededFor(1, 100)).toBe(1);
     expect(binsNeededFor(0, 4)).toBe(1);
+  });
+
+  it('refuses a width no bin count can reach rather than looping or returning NaN', () => {
+    // A price cannot fall by 100%, so the downside of a bin ladder never gets
+    // there. `-log1p(-1)` is Infinity and `-log1p(-1.5)` is NaN; both would
+    // propagate silently into an empty fetch three RPC calls later.
+    expect(() => binsNeededFor(10_000, 4)).toThrow(/-10000bp/);
+    expect(() => binsNeededFor(15_000, 4)).toThrow(/15000bp/);
+    // Just inside the bound still answers.
+    expect(binsNeededFor(9_999, 4)).toBeGreaterThan(0);
+    expect(Number.isFinite(binsNeededFor(9_999, 4))).toBe(true);
   });
 });
 
