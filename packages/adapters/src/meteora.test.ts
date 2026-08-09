@@ -80,6 +80,32 @@ describe('Meteora field mapping', () => {
     expect(ok(SOL_USDC).feeIsDynamic).toBe(false);
     expect(ok({ ...SOL_USDC, pool_config: { bin_step: 4, base_fee_pct: 0.04, max_fee_pct: 1.0 } }).feeIsDynamic).toBe(true);
   });
+
+  it('converts farm_apy from percent to a fraction', () => {
+    // Asserted on a farming pool on purpose: SOL-USDC emits nothing, and
+    // `0 / 100 === 0`, so the fixture alone would pass with the division
+    // dropped entirely.
+    expect(ok({ ...SOL_USDC, farm_apy: 12.5 }).apyReward).toBeCloseTo(0.125, 12);
+    expect(ok(SOL_USDC).apyReward).toBe(0);
+  });
+
+  it('labels the volume distribution as modelled, never as observed', () => {
+    // §6 requires a modelled `V_δ` to travel with its label — an unlabelled
+    // one is indistinguishable from a measured one downstream.
+    const p = ok(SOL_USDC);
+    expect(p.priceHistogramSource).toBe('modelled-uniform-over-range');
+    expect(p.priceHistogram.length).toBeGreaterThan(0);
+    expect(p.priceHistogram.reduce((sum, b) => sum + b.volumeUsd, 0)).toBeCloseTo(
+      SOL_USDC.volume!['24h']!,
+      3,
+    );
+  });
+
+  it('stamps asOf from the injected clock rather than the wall clock', () => {
+    // The clock is a parameter so captured fixtures replay identically;
+    // reaching for Date.now() here would make every replay a fresh row.
+    expect(ok(SOL_USDC).asOf).toBe(1_786_213_579_000);
+  });
 });
 
 describe('Meteora pool rejection', () => {
