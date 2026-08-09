@@ -14,6 +14,32 @@ import { BIN_ARRAY_SIZE } from './meteoraBins.js';
 export const DLMM_PROGRAM_ID = 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo';
 export const DEFAULT_SOLANA_RPC = 'https://api.mainnet-beta.solana.com';
 
+/**
+ * Which endpoint the bin reader talks to: option, then env, then the public node.
+ *
+ * An explicit `rpcUrl` always wins — a caller that named an endpoint meant it.
+ *
+ * `SOLANA_RPC_URL` exists because of a cadence hazard, not a preference. The
+ * public default is fine for a keeper's periodic scan or a one-off `record`
+ * capture: a full `topK: 8` enrichment took 6.8s with no 429s. It is not fine
+ * for a server loop. `packages/api/src/poolCache.ts` holds pools for 60s and
+ * defaults to every adapter, Meteora included, so a running API server issues
+ * 1 + 3K = 25 RPC calls a minute — 8 of them `getProgramAccounts` scans, the
+ * most expensive method there is, at ~7-10s each. That is roughly 11,500
+ * program scans a day against a free endpoint, and a substantial duty cycle of
+ * it. `poolCache.ts`'s own header rejects refetching per keystroke as "rude to
+ * the upstream APIs"; this is worse than the thing that comment rejects. A
+ * deployment running that loop must point `SOLANA_RPC_URL` at an endpoint it is
+ * entitled to hammer.
+ */
+export function resolveRpcUrl(explicit?: string): string {
+  // Trimmed and treated as absent when blank: deploy platforms hand over an
+  // unset variable as an empty string, and `''` would otherwise resolve to a
+  // request against the relative-URL nothing.
+  const fromEnv = process.env.SOLANA_RPC_URL?.trim();
+  return explicit ?? (fromEnv || DEFAULT_SOLANA_RPC);
+}
+
 /** `getMultipleAccounts` accepts at most 100 keys per call. */
 const MAX_ACCOUNTS_PER_CALL = 100;
 
@@ -73,7 +99,7 @@ export type SolanaRpcOptions = {
 };
 
 async function call<T>(method: string, params: unknown[], options: SolanaRpcOptions): Promise<T> {
-  const url = options.rpcUrl ?? DEFAULT_SOLANA_RPC;
+  const url = resolveRpcUrl(options.rpcUrl);
   const send = options.transport ?? postJson;
   const body = (await send(
     url,

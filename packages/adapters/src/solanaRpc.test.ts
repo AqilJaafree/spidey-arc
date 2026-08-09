@@ -1,10 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import {
   binArrayFilters,
   chunk,
   decodeBase64,
   discoverBinArrays,
   getMultipleAccounts,
+  resolveRpcUrl,
+  DEFAULT_SOLANA_RPC,
 } from './solanaRpc.js';
 
 describe('base64 account data', () => {
@@ -52,6 +54,48 @@ function recorder(reply: (call: Call, nth: number) => unknown) {
 
 /** What an `getMultipleAccounts` row looks like on the wire. */
 const account = (data: string) => ({ data: [data, 'base64'], owner: 'owner' });
+
+describe('endpoint resolution', () => {
+  const previous = process.env.SOLANA_RPC_URL;
+  afterAll(() => {
+    // Restored, not left set: vitest runs the files in a worker inside one
+    // process, and an earlier task in this branch found a real intra-file leak
+    // from exactly this pattern. A stray endpoint here would silently redirect
+    // any later test that resolves one.
+    if (previous === undefined) delete process.env.SOLANA_RPC_URL;
+    else process.env.SOLANA_RPC_URL = previous;
+  });
+
+  it('lets an explicit rpcUrl win over SOLANA_RPC_URL', async () => {
+    process.env.SOLANA_RPC_URL = 'https://from-env.example';
+    const { calls, transport } = recorder(() => ({ result: { value: [null] } }));
+
+    // A caller that named an endpoint meant it — the env var is a deployment
+    // default, not an override of the code.
+    await getMultipleAccounts(['A'], { transport, rpcUrl: 'https://explicit.example' });
+    expect(calls[0]?.url).toBe('https://explicit.example');
+  });
+
+  it('uses SOLANA_RPC_URL when no option is given', async () => {
+    process.env.SOLANA_RPC_URL = 'https://from-env.example';
+    const { calls, transport } = recorder(() => ({ result: [] }));
+
+    // The scan path too, not just account reads: gPA is the expensive call and
+    // the whole reason the override exists.
+    await discoverBinArrays('POOL', { transport });
+    expect(calls[0]?.url).toBe('https://from-env.example');
+  });
+
+  it('falls back to the public endpoint when the var is unset or blank', () => {
+    delete process.env.SOLANA_RPC_URL;
+    expect(resolveRpcUrl()).toBe(DEFAULT_SOLANA_RPC);
+
+    // Deploy platforms hand over an unset variable as an empty string, and `''`
+    // would otherwise be honoured as an endpoint.
+    process.env.SOLANA_RPC_URL = '   ';
+    expect(resolveRpcUrl()).toBe(DEFAULT_SOLANA_RPC);
+  });
+});
 
 describe('JSON-RPC errors surface', () => {
   it('throws naming the method, the code and the message', async () => {

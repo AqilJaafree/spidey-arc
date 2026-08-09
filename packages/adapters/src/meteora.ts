@@ -168,6 +168,14 @@ export type MeteoraOptions = {
   /** Pools to enrich with bin data. 0 disables the RPC path entirely. */
   topK?: number;
   coverageBps?: number;
+  /**
+   * Overrides `SOLANA_RPC_URL`, which overrides the public endpoint.
+   *
+   * One of the two has to be set by anything scanning on a short timer — see
+   * `resolveRpcUrl` for the arithmetic, but the short version is that a 60s
+   * `PoolCache` TTL turns `topK` into 3K program scans a minute against a free
+   * node.
+   */
   rpcUrl?: string;
   /** Seam for tests; production builds an RPC-backed source. */
   binSource?: BinSource;

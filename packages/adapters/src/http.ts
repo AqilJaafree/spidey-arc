@@ -36,8 +36,11 @@ export function fetchMode(): FetchMode {
  * Stable, filesystem-safe name for a request.
  *
  * Gzipped because these are committed: DefiLlama's `/pools` alone is ~11MB of
- * JSON, and a repo carrying that raw is a repo nobody wants to clone. Gzip
- * takes the full fixture set from ~16MB to under 2MB with no loss.
+ * JSON, and a repo carrying that raw is a repo nobody wants to clone. That one
+ * response compresses to 2.07MB, which is most of the 2.35MB the whole fixture
+ * set currently weighs. The ratio is the argument, not any particular ceiling —
+ * the set grows with every venue added, and gzip is what keeps it tolerable
+ * rather than small.
  */
 export function fixtureName(namespace: string, url: string): string {
   const hash = createHash('sha256').update(url).digest('hex').slice(0, 12);

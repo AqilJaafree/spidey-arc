@@ -56,15 +56,17 @@ Live data, at the time of writing:
 |---|---|---:|---:|---:|
 | SOL/USDC | Orca | $25.5M | $115k (±4bp) | **0.45%** |
 | WETH/USDC | Uniswap v3 (Base) | $112M | $8.76M (±60bp) | 7.81% |
+| PUMP/USDC | Meteora (DLMM) | $1.04M | $37.9k (±500bp) | 3.64% |
+| SOL/USDC | Meteora (DLMM) | $5.06M | $947k (±100bp) | 18.7% |
 | USDC/USDT | Orca | $1.18M | $638k (±1bp) | 53.9% |
 
-From 0.45% to 54% depending on venue and range width — which is precisely why one headline number cannot rank these.
+From 0.45% to 54% depending on venue and range width — which is precisely why one headline number cannot rank these. The two Meteora rows are the same venue, the same day and the same query: one pool holds 18.7% of its headline TVL within a percent of the price, the other 3.6% within five percent.
 
 ## Quickstart
 
 ```bash
 pnpm install
-pnpm test          # 178 TypeScript tests
+pnpm test          # 393 TypeScript tests
 pnpm api           # scoring engine on :8787
 pnpm web           # UI on :3000
 
@@ -85,7 +87,7 @@ So adapters report `null` when they cannot measure, every number carries the ran
 
 ```
   packages/core      scoring math + rank(A). Pure — no I/O.
-  packages/adapters  Orca, Uniswap v3, Raydium, DefiLlama → NormalizedPool
+  packages/adapters  Meteora, Orca, Uniswap v3, Raydium, DefiLlama → NormalizedPool
   packages/api       Hono HTTP surface, TTL-cached
   packages/keeper    Merkle tree builder, rebalance planner, CCTP relayer
   apps/web           Next.js comparison UI
@@ -238,7 +240,7 @@ limit. `withdraw-dlmm.ts` asks for 600,000.
 
 | Suite | Count |
 |---|---:|
-| TypeScript (`vitest`) | 178 |
+| TypeScript (`vitest`) | 393 |
 | Contracts, offline (`forge`) | 103 |
 | Invariants (mutation-tested) | 12 |
 | Fork, live Base Sepolia | 8 |
@@ -318,8 +320,10 @@ Also worth stating plainly: **Arc's native gas is 18 decimals, not 6.** Several 
   **`pnpm keeper:report-nav` now refreshes the mark**, which narrows the liveness dependency without closing it. The obvious fix — re-post the current number to reset the clock — would have been worse than the bug: it converts the safe failure (refuse to pay) into the unsafe one (pay at par out of a loss nobody marked down). So the command *verifies* instead. The hub's deployed capital is USDC held by `CctpReturnRelay` on Base, not an LP position, so its value is a balance read rather than an estimate; an unchanged mark is a finding, and a failed read exits non-zero rather than posting anything. The contract's own bounds are read from the vault each run, so the keeper cannot propose a step the chain rejects.
 
   What is still missing is a **scheduler** — nothing runs it hourly. And the posting branch has not executed against a live vault: as of 2026-08-08 the hub's `deployedAssets` is 0, so the run exercises the reads, the bounds and the early return, not the write. The failure path is proven (a dead RPC exits 1 naming the failed call). In-flight burns count as zero until burn-log scanning lands, which understates assets and therefore caps *downward* — the direction that haircuts rather than overpays, and it logs `capped` when it happens.
-- **Meteora has no adapter.** The legacy REST host is retired — Cloudflare 404s every path with `cf-cache-status: HIT`. Real bin data needs on-chain reads.
-- **No `tick-level` fidelity.** Both live venues report `current-tick-liquidity`, exact only within the current tick interval.
+- ~~**Meteora has no adapter.**~~ **Built, and reading real bins.** The legacy REST host is still retired; the current one (`dlmm.datapi.meteora.ag`) supplies the listing, and the denominator comes from the chain — `BinArray` accounts over plain Solana JSON-RPC, no DLMM SDK, so the reads replay from fixtures like every other adapter.
+- ~~**No `tick-level` fidelity.**~~ **Meteora reaches it, for a rationed few pools per scan.** Constant-sum bins make it the only source that can answer "how much is in range at ±δ" for an arbitrary δ rather than one tick interval, and the only one that produces a real `liquidityHistogram`. But bins are on-chain accounts costing three RPC calls per pool, so only the top 8 pools that clear a $1M TVL and $100k daily-volume floor get read; **every other Meteora row is `unavailable`**, and says so. Orca and Uniswap v3 remain the two venues with a denominator on every row.
+
+  A floor cleared is not a deposit absorbed. The floors are on *headline* TVL, because the quantity that actually matters — in-range liquidity — is only knowable after the read the floor exists to ration. PUMP/USDC clears $1M headline while holding $37,904 at ±500bp, 27x smaller. A floor sized from the deposit is the honest version and is not built.
 
 ## Deploying
 
@@ -393,3 +397,5 @@ anchor idl build > target/idl/meteora_receiver.json
 ```
 
 Optional environment: `BASE_RPC_URL`, `ETHEREUM_RPC_URL`, `ARBITRUM_RPC_URL`, `OPTIMISM_RPC_URL` override the public endpoints. `PORT` sets the API port. `NEXT_PUBLIC_API_URL` tells the UI where the API is.
+
+`SOLANA_RPC_URL` overrides the endpoint Meteora's bin reader uses, and **anything running the API for real should set it.** The public node is fine for a keeper's periodic scan or a `record` capture — a full 8-pool enrichment took 6.8s with no rate limiting. It is not fine for a server: the pool cache expires after 60s, so a live API issues 25 RPC calls a minute, 8 of them `getProgramAccounts` scans at ~7-10s each. That is ~11,500 program scans a day against a free endpoint.
