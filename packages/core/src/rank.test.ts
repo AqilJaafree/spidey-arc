@@ -196,11 +196,14 @@ describe('rank — range width is clamped to what the venue can express', () => 
 });
 
 describe('rank — T_δ sourcing', () => {
-  it('prefers the liquidity histogram, which answers at any δ', () => {
+  it('prefers the liquidity histogram, at any δ the histogram covers', () => {
+    // `activeTvlDeltaBps` states the width the histogram was measured over, so
+    // it has to reach the outermost bucket — declaring ±10bp here while
+    // carrying a ±100bp bucket describes no measurement any venue took.
     const p = pool({
       poolId: 'hist',
       activeTvlUsd: 999_999_999,
-      activeTvlDeltaBps: 10,
+      activeTvlDeltaBps: 100,
       liquidityHistogram: [
         { bpsFromPeg: -5, liquidityUsd: 300_000 },
         { bpsFromPeg: 0, liquidityUsd: 400_000 },
@@ -208,8 +211,47 @@ describe('rank — T_δ sourcing', () => {
         { bpsFromPeg: 100, liquidityUsd: 5_000_000 },
       ],
     });
+    // Both widths beat the absurd `activeTvlUsd`, which is the point.
     expect(othersLiquidityInRange(p, 10).value).toBe(1_000_000);
-    expect(othersLiquidityInRange(p, 200).value).toBe(6_000_000);
+    expect(othersLiquidityInRange(p, 100).value).toBe(6_000_000);
+  });
+});
+
+describe('a histogram is only trusted as wide as it was measured', () => {
+  /** Covers ±100bps: three buckets, $1,000 each. */
+  const narrowHistogram = {
+    activeTvlUsd: 3_000,
+    activeTvlDeltaBps: 100,
+    activeTvlFidelity: 'tick-level' as const,
+    liquidityHistogram: [
+      { bpsFromPeg: -100, liquidityUsd: 1_000 },
+      { bpsFromPeg: 0, liquidityUsd: 1_000 },
+      { bpsFromPeg: 100, liquidityUsd: 1_000 },
+    ],
+  };
+
+  it('sums the histogram inside the width it covers', () => {
+    const p = { ...pool({ poolId: 'narrow' }), ...narrowHistogram };
+    expect(othersLiquidityInRange(p, 100)).toEqual({ value: 3_000, flag: null });
+    expect(othersLiquidityInRange(p, 50)).toEqual({ value: 1_000, flag: null });
+  });
+
+  it('refuses to answer wider than it measured, rather than under-reporting', () => {
+    // The dangerous direction: returning 3,000 here would understate T_δ, which
+    // overstates your share of the pool and therefore your APR.
+    const p = { ...pool({ poolId: 'narrow' }), ...narrowHistogram };
+    expect(othersLiquidityInRange(p, 500)).toEqual({
+      value: null,
+      flag: 'range-width-mismatch',
+    });
+  });
+
+  it('still refuses when a histogram arrives with no declared width', () => {
+    const p = { ...pool({ poolId: 'narrow' }), ...narrowHistogram, activeTvlDeltaBps: null };
+    expect(othersLiquidityInRange(p, 10)).toEqual({
+      value: null,
+      flag: 'range-width-mismatch',
+    });
   });
 });
 

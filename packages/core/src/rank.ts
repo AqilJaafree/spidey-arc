@@ -191,15 +191,32 @@ export function resolveDeltaBps(pool: NormalizedPool, requested?: number): numbe
  * `T_δ` — others' liquidity overlapping the requested range.
  *
  * Preferred source is the liquidity histogram, which answers the question
- * directly at any δ. Falling back to `activeTvlUsd` is only sound when it was
- * measured over a comparable width; outside {@link RANGE_WIDTH_TOLERANCE}
- * this returns `null` and the pool is excluded, per §6.
+ * directly at any δ *within the width it was measured over* — `activeTvlDeltaBps`
+ * doubles as that declared coverage, and a wider question is refused rather
+ * than answered from buckets that were never collected. Falling back to
+ * `activeTvlUsd` is only sound when it was measured over a comparable width;
+ * outside {@link RANGE_WIDTH_TOLERANCE} this returns `null` and the pool is
+ * excluded, per §6.
  */
 export function othersLiquidityInRange(
   pool: NormalizedPool,
   deltaBps: number,
 ): { value: number | null; flag: PoolFlag | null } {
   if (pool.liquidityHistogram && pool.liquidityHistogram.length > 0) {
+    // A histogram answers `T_δ` directly at any δ it actually covers — and
+    // only there. Summing a ±100bp histogram for a ±500bp question returns the
+    // narrow total as though it were the wide one, understating `T_δ`, which
+    // overstates your share and your APR. It fails in the flattering
+    // direction, so it has to be refused rather than truncated. Same posture
+    // as the `activeTvlUsd` branch below, and the same flag.
+    //
+    // The check is one-sided where the scalar branch's is two-sided: a
+    // histogram can always answer a *narrower* question exactly by summing
+    // fewer buckets, whereas rescaling a single scalar is unsound in either
+    // direction.
+    if (pool.activeTvlDeltaBps === null) return { value: null, flag: 'range-width-mismatch' };
+    if (deltaBps > pool.activeTvlDeltaBps) return { value: null, flag: 'range-width-mismatch' };
+
     let total = 0;
     for (const bucket of pool.liquidityHistogram) {
       if (Math.abs(bucket.bpsFromPeg) <= deltaBps) total += bucket.liquidityUsd;
