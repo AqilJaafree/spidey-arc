@@ -143,6 +143,39 @@ describe('getMultipleAccounts', () => {
     expect(Array.from(out[1] as Uint8Array)).toEqual([0, 1, 2, 3]);
   });
 
+  /**
+   * The positional-pairing guarantee, as the only failure that breaks it.
+   *
+   * `for (const value of result.value ?? [])` shortened `out` when the response
+   * carried fewer values than the batch asked for. Every address after the gap
+   * pairs with a neighbour's bytes, and the caller — `createRpcBinSource`, which
+   * indexes `needed[i]` against `datas[i]` — has no way to see it. One batch
+   * holds 100 keys and a bin read asks for at most five, so this is unreachable
+   * today; the docblock promises it anyway.
+   */
+  it('throws rather than shortening the array when the RPC returns fewer values', async () => {
+    const { transport } = recorder(() => ({ result: { value: [account('AAECAw==')] } }));
+    await expect(getMultipleAccounts(['a', 'b', 'c'], { transport })).rejects.toThrow(
+      /returned 1 values for 3 addresses/,
+    );
+  });
+
+  it('throws on more values than asked for too, not just fewer', async () => {
+    const { transport } = recorder(() => ({
+      result: { value: [account('AAECAw=='), account('AAECAw==')] },
+    }));
+    await expect(getMultipleAccounts(['a'], { transport })).rejects.toThrow(
+      /returned 2 values for 1 addresses/,
+    );
+  });
+
+  it('throws on a result with no value array rather than reading it as no accounts', async () => {
+    const { transport } = recorder(() => ({ result: {} }));
+    await expect(getMultipleAccounts(['a'], { transport })).rejects.toThrow(
+      /returned 0 values for 1 addresses/,
+    );
+  });
+
   it('forwards dataSlice when given, and omits it when not', async () => {
     const { calls, transport } = recorder(() => ({ result: { value: [null] } }));
 

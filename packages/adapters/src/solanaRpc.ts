@@ -136,7 +136,20 @@ export async function getMultipleAccounts(
     // Sequential, and appended in batch order: callers pair these positionally
     // with the addresses they asked for, and a missing account holds its slot
     // as `null` rather than shortening the array.
-    for (const value of result.value ?? []) {
+    //
+    // Which is a contract the loop cannot keep on its own. A response carrying
+    // fewer values than the batch asked for shifts every later address onto the
+    // wrong account and shortens `out`, so a caller reading `out[i]` gets a
+    // neighbour's bytes with no indication anything moved. Unreachable today —
+    // five bin arrays is one batch — but the docblock states the guarantee, so
+    // the guarantee is checked rather than assumed.
+    const values = result.value ?? [];
+    if (values.length !== batch.length) {
+      throw new Error(
+        `getMultipleAccounts returned ${values.length} values for ${batch.length} addresses; positional pairing would be wrong`,
+      );
+    }
+    for (const value of values) {
       out.push(value === null ? null : decodeBase64(value.data[0]));
     }
   }

@@ -97,4 +97,39 @@ describe('postJson inherits getJson retry policy', () => {
 
     expect(spy).toHaveBeenCalledTimes(2);
   });
+
+  /**
+   * 429 is the exception carved out of the 4xx rule, and the whole reason the
+   * retry policy exists on this transport: the bin reader's default endpoint is
+   * a public Solana node, and `getProgramAccounts` is the most expensive method
+   * it serves. A rate limit is the venue asking us to wait, not a bug in the
+   * request — the one 4xx where backing off and trying again is correct.
+   *
+   * Untested until now, which meant deleting `&& response.status !== 429` from
+   * `http.ts` left the suite green and turned every rate limit into a single
+   * failed attempt.
+   */
+  it('does retry a 429, the one 4xx that is the venue asking us to wait', async () => {
+    process.env.SPIDEY_FETCH_MODE = 'live';
+    const spy = vi.fn(async () => jsonResponse(429, 'Too Many Requests'));
+    globalThis.fetch = spy as unknown as typeof fetch;
+
+    await expect(
+      postJson('https://rpc.example/', { method: 'getProgramAccounts' }, { namespace: 'nope', retries: 1 }),
+    ).rejects.toThrow(/429/);
+
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it('gives up on a 429 that never clears, rather than retrying forever', async () => {
+    process.env.SPIDEY_FETCH_MODE = 'live';
+    const spy = vi.fn(async () => jsonResponse(429, 'Too Many Requests'));
+    globalThis.fetch = spy as unknown as typeof fetch;
+
+    await expect(
+      postJson('https://rpc.example/', { method: 'getProgramAccounts' }, { namespace: 'nope', retries: 0 }),
+    ).rejects.toThrow(/429/);
+
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
 });
