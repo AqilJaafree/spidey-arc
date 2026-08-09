@@ -11,13 +11,15 @@
  * | raydium     | Solana   | unavailable             | no         |
  * | defillama   | many     | unavailable             | no         |
  *
- * The fidelity column is what each adapter *can* reach, not what today's rows
- * carry. Orca and Uniswap v3 supply a real in-range denominator now, which is
+ * The fidelity column is what each adapter *can* reach, not what every row
+ * carries. Orca and Uniswap v3 supply a real in-range denominator, which is
  * what §11 Day 1 asks for ("`activeTvlUsd` correct for at least 2"). Meteora
- * declares `tick-level` because its constant-sum bins can answer `T_δ` at any
- * δ, but its rows still report `unavailable` until the bin reader lands.
- * Raydium and DefiLlama supply breadth and, by being excluded, the comparison
- * the product argues about.
+ * reaches `tick-level` from its constant-sum bins, but only for the handful of
+ * pools per scan that get an RPC read — the ones deep and busy enough to take a
+ * deposit. Every other Meteora row is listed at `unavailable`, on purpose: bins
+ * are on-chain accounts, so the denominator costs three RPC calls per pool and
+ * is rationed rather than skipped. Raydium and DefiLlama supply breadth and, by
+ * being excluded, the comparison the product argues about.
  */
 
 import type { NormalizedPool } from '@spidey/core';

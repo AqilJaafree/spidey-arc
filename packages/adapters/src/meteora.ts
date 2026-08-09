@@ -171,7 +171,7 @@ export type MeteoraOptions = {
   rpcUrl?: string;
   /** Seam for tests; production builds an RPC-backed source. */
   binSource?: BinSource;
-};
+} & EnrichmentFloors;
 
 async function fetchPoolsLive(ctx: AdapterContext, pageSize: number): Promise<MeteoraPool[]> {
   const body = await getJson<MeteoraPoolsResponse>(poolsUrl(1, pageSize), {
@@ -216,18 +216,29 @@ export function createMeteoraAdapter(options: MeteoraOptions = {}): VenueAdapter
         if (pools.length >= limit) break;
       }
 
-      const { topK = DEFAULT_TOP_K, coverageBps, rpcUrl, binSource } = options;
+      const { topK = DEFAULT_TOP_K, coverageBps, rpcUrl, binSource, minTvlUsd, minVolume24hUsd } =
+        options;
       if (topK <= 0 || pools.length === 0) return { pools, skipped };
 
       // Rank among the rows that actually survived normalization — enriching a
       // pool that was skipped would spend the budget on a row nobody sees.
+      // `topKByFeeRatio` also applies the TVL and volume floors, which ration
+      // the RPC to pools that could take a deposit. Note what is *not* happening
+      // here: the floors touch `chosen`, never `pools`. A sub-floor pool keeps
+      // its full REST row and is still listed and still compared, just at
+      // `unavailable` — breadth is the product, and the denominator is the
+      // expensive part worth rationing.
       const kept = new Set(pools.map((p) => p.poolId));
       const chosen = topKByFeeRatio(
         raw.filter((row) => kept.has(row.address)),
         topK,
+        { minTvlUsd, minVolume24hUsd },
       );
 
       const enriched = await enrichWithBins(pools, {
+        // Hazard, paid for once: stubbing `fetchPools` does not isolate a test
+        // from the network, because this line still reaches a live RPC. A test
+        // that wants no network must pass `topK: 0` or its own `binSource`.
         source: binSource ?? createRpcBinSource({ rpcUrl, signal: ctx.signal }),
         rows: chosen,
         coverageBps,
@@ -278,13 +289,57 @@ export type BinReading = {
 export type BinSource = (poolId: string, coverageBps: number) => Promise<BinReading>;
 
 /**
- * Highest 24h fee/TVL ratio first — the pools most worth a denominator.
+ * Floors matching `uniswapV3`'s, and for the same reason.
+ *
+ * A denominator is only worth an RPC read for a pool that could actually take
+ * the vault's deposit. `$1M` TVL with `$100k` daily volume leaves 12 pools on a
+ * 200-row page — comfortably more than {@link DEFAULT_TOP_K}.
+ */
+export const DEFAULT_MIN_TVL_USD = 1_000_000;
+export const DEFAULT_MIN_VOLUME_24H_USD = 100_000;
+
+export type EnrichmentFloors = {
+  minTvlUsd?: number;
+  minVolume24hUsd?: number;
+};
+
+/**
+ * Could this pool absorb a real deposit?
+ *
+ * Separate from the ranking because it answers a different question — the
+ * ratio says which pool is *most attractive*, this says which are *eligible* —
+ * and because `listPools` is not the only place that will ever want to ask.
+ */
+export function canAbsorbDeposit(row: MeteoraPool, floors: EnrichmentFloors = {}): boolean {
+  const { minTvlUsd = DEFAULT_MIN_TVL_USD, minVolume24hUsd = DEFAULT_MIN_VOLUME_24H_USD } = floors;
+  return row.tvl >= minTvlUsd && (row.volume?.['24h'] ?? 0) >= minVolume24hUsd;
+}
+
+/**
+ * Highest 24h fee/TVL ratio first, among pools that could take a deposit.
+ *
+ * The floors are applied *inside* this function rather than by its callers, and
+ * default to on, because `fee_tvl_ratio` unfiltered is not a yield signal — it
+ * is a dust detector. It divides fees by TVL, so as TVL approaches zero the
+ * ratio explodes: the same 200-row page carries pools at `tvl` well under a
+ * dollar scoring 2.7e9, against SOL-USDC's 0.068 on $5.06M and $9.4M of daily
+ * volume. Ranked without a floor, the entire budget goes to pools with a few
+ * hundred dollars of in-range liquidity, and the venue's real pools — the only
+ * ones that can hold the vault's capital — never carry a denominator, so they
+ * can never be ranked. That is precisely the failure this adapter exists to
+ * fix, so the guard belongs where it cannot be forgotten rather than in a
+ * caller that has to remember it.
  *
  * A missing ratio sorts last rather than first: an unmeasured pool must not
  * win the enrichment budget over a measured one.
  */
-export function topKByFeeRatio(rows: readonly MeteoraPool[], k: number): MeteoraPool[] {
-  return [...rows]
+export function topKByFeeRatio(
+  rows: readonly MeteoraPool[],
+  k: number,
+  floors: EnrichmentFloors = {},
+): MeteoraPool[] {
+  return rows
+    .filter((row) => canAbsorbDeposit(row, floors))
     .sort((a, b) => (b.fee_tvl_ratio?.['24h'] ?? 0) - (a.fee_tvl_ratio?.['24h'] ?? 0))
     .slice(0, Math.max(0, k));
 }

@@ -1,9 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { rank } from '@spidey/core';
 import {
+  canAbsorbDeposit,
   coverageFor,
   createMeteoraAdapter,
   DEFAULT_BIN_COVERAGE_BPS,
+  DEFAULT_MIN_TVL_USD,
+  DEFAULT_MIN_VOLUME_24H_USD,
   enrichWithBins,
   meteoraAdapter,
   METEORA_BASE,
@@ -251,6 +254,62 @@ describe('choosing which pools get bin data', () => {
     const chosen = topKByFeeRatio([{ ...SOL_USDC, address: 'none', fee_tvl_ratio: {} }, withRatio('b', 0.1)], 1);
     expect(chosen.map((p) => p.address)).toEqual(['b']);
   });
+
+  /**
+   * The dust bug, as a regression test.
+   *
+   * `fee_tvl_ratio` divides fees by TVL, so a pool with pennies of TVL scores
+   * orders of magnitude above a real one — measured live, sub-dollar pools score
+   * up to 2.7e9 against SOL-USDC's 0.068. Ranking on it alone hands the whole
+   * enrichment budget to pools that cannot absorb a deposit, and leaves the
+   * venue's real pools permanently without a denominator and so permanently
+   * unrankable. Remove the floors from `topKByFeeRatio` and this test fails with
+   * `expected [ 'DUST' ] to deeply equal [ 'REAL' ]`.
+   */
+  it('lets a substantial pool beat a dust pool with an absurd ratio', () => {
+    const dust: MeteoraPool = {
+      ...SOL_USDC,
+      address: 'DUST',
+      tvl: 0.42,
+      volume: { '24h': 196_272 },
+      fee_tvl_ratio: { '24h': 135_161_916 },
+    };
+    const real: MeteoraPool = {
+      ...SOL_USDC,
+      address: 'REAL',
+      tvl: 5_057_683,
+      volume: { '24h': 9_352_079 },
+      fee_tvl_ratio: { '24h': 0.0684 },
+    };
+
+    expect(topKByFeeRatio([dust, real], 1).map((p) => p.address)).toEqual(['REAL']);
+    // And the dust pool is not merely outranked, it is ineligible: it never
+    // wins even when it is the only candidate.
+    expect(topKByFeeRatio([dust], 8)).toHaveLength(0);
+    expect(canAbsorbDeposit(dust)).toBe(false);
+    expect(canAbsorbDeposit(real)).toBe(true);
+  });
+
+  it('rations on volume as well as TVL', () => {
+    // A large but idle pool earns nothing to measure a share of. Both floors
+    // have to bite, or a stale $5M pool displaces a working one.
+    const idle = { ...withRatio('IDLE', 9), volume: { '24h': 500 } };
+    expect(topKByFeeRatio([idle], 8)).toHaveLength(0);
+    expect(canAbsorbDeposit(idle)).toBe(false);
+  });
+
+  it('honours floors a caller lowers deliberately', () => {
+    const small = { ...withRatio('SMALL', 9), tvl: 50_000, volume: { '24h': 20_000 } };
+    expect(topKByFeeRatio([small], 8)).toHaveLength(0);
+    expect(
+      topKByFeeRatio([small], 8, { minTvlUsd: 10_000, minVolume24hUsd: 1_000 }).map((p) => p.address),
+    ).toEqual(['SMALL']);
+  });
+
+  it('defaults to the same floors as the EVM adapter', () => {
+    expect(DEFAULT_MIN_TVL_USD).toBe(1_000_000);
+    expect(DEFAULT_MIN_VOLUME_24H_USD).toBe(100_000);
+  });
 });
 
 describe('coverageFor', () => {
@@ -463,9 +522,12 @@ describe('listPools enrichment', () => {
     // skipped rows are the busiest, every request would be wasted.
     const asked: string[] = [];
     const adapter = createMeteoraAdapter({
+      // DEAD is skipped for a missing `bin_step` rather than for no TVL, so it
+      // clears the enrichment floors comfortably. Otherwise the floors would
+      // exclude it too and this would stop testing the `kept` filter at all.
       fetchPools: async () => [
         withRatio('GOOD', 0.1),
-        { ...withRatio('DEAD', 0.9), tvl: 0 },
+        { ...withRatio('DEAD', 0.9), pool_config: { base_fee_pct: 0.04 } },
       ],
       topK: 1,
       binSource: async (poolId) => {
@@ -483,6 +545,48 @@ describe('listPools enrichment', () => {
     expect(asked).toEqual(['GOOD']);
     expect(skipped.map((s) => s.poolId)).toEqual(['DEAD']);
     expect(pools[0]!.activeTvlFidelity).toBe('tick-level');
+  });
+
+  it('rations the denominator without narrowing the listing', async () => {
+    // The floors gate the RPC, not the rows. A small pool stays listed with its
+    // REST fields intact and `unavailable` fidelity — that is the comparison
+    // column the product argues about, and losing it would be a different and
+    // unwanted change.
+    const asked: string[] = [];
+    const small: MeteoraPool = {
+      ...withRatio('SMALL', 999),
+      tvl: 5_218,
+      volume: { '24h': 53_096 },
+    };
+    const adapter = createMeteoraAdapter({
+      fetchPools: async () => [small, withRatio('BIG', 0.05)],
+      binSource: async (poolId) => {
+        asked.push(poolId);
+        return {
+          activeId: 0,
+          binStep: 4,
+          bins: [{ binId: 0, amountX: 0n, amountY: 100n * 10n ** 6n }],
+          coveredBps: 500,
+        };
+      },
+    });
+
+    const { pools, skipped } = await adapter.listPools({ symbols: ['USDC'], now: 1 });
+    // Listed, both of them, despite the ratio ordering putting SMALL first.
+    expect(pools.map((p) => p.poolId)).toEqual(['SMALL', 'BIG']);
+    expect(skipped).toHaveLength(0);
+    expect(asked).toEqual(['BIG']);
+
+    const byId = new Map(pools.map((p) => [p.poolId, p]));
+    const sub = byId.get('SMALL')!;
+    expect(sub.activeTvlFidelity).toBe('unavailable');
+    expect(sub.activeTvlUsd).toBeNull();
+    // Not a stub of a row: the REST fields a comparison needs are all there.
+    expect(sub.tvlUsd).toBe(5_218);
+    expect(sub.volume24h).toBe(53_096);
+    expect(sub.binStep).toBe(4);
+    expect(sub.apyBase).toBeGreaterThan(0);
+    expect(byId.get('BIG')!.activeTvlFidelity).toBe('tick-level');
   });
 });
 
