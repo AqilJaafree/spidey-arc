@@ -14,7 +14,12 @@
  * Bins are **constant-sum**: each holds concrete amounts of X and Y rather
  * than a liquidity constant, so a bin's USD value is a weighted sum with no
  * `L` inversion. That is what makes `activeTvlFidelity: 'tick-level'` honest
- * at any width, unlike a single current-tick `L`.
+ * across the width the bins were actually read over, unlike a single
+ * current-tick `L` — but only across that width. The reader covers a bounded
+ * number of bins either side of the active one, `binsNeededFor` decides how
+ * many, and the row has to declare the result: `othersLiquidityInRange` refuses
+ * a question wider than the declared coverage rather than answering it from
+ * buckets nobody fetched.
  */
 
 import type { LiquidityHistogramBucket } from '@spidey/core';

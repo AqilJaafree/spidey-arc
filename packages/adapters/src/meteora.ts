@@ -248,7 +248,9 @@ export function createMeteoraAdapter(options: MeteoraOptions = {}): VenueAdapter
     id: 'meteora',
     label: 'Meteora (DLMM)',
     // What the bin reader reaches. Constant-sum bins make this the only venue
-    // that can answer `T_δ` at an arbitrary δ rather than one tick interval.
+    // that can answer `T_δ` at any δ within the width it measured, rather than
+    // at one tick interval — that width is `DEFAULT_BIN_COVERAGE_BPS`, and the
+    // row declares it so a wider question is refused rather than guessed.
     bestFidelity: 'tick-level',
 
     async listPools(ctx: AdapterContext = {}): Promise<AdapterResult> {
@@ -342,7 +344,7 @@ export type BinSource = (poolId: string, coverageBps: number) => Promise<BinRead
  * Floors matching `uniswapV3`'s, and for the same reason.
  *
  * A denominator is only worth an RPC read for a pool that could actually take
- * the vault's deposit. `$1M` TVL with `$100k` daily volume leaves 12 pools on a
+ * the vault's deposit. `$1M` TVL with `$100k` daily volume leaves 14 pools on a
  * 200-row page — comfortably more than {@link DEFAULT_TOP_K}.
  */
 export const DEFAULT_MIN_TVL_USD = 1_000_000;
