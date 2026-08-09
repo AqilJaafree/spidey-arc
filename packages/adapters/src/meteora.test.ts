@@ -956,4 +956,73 @@ describe('bin data against the recorded chain state', () => {
     expect(result.ranked.length).toBeGreaterThan(0);
     for (const row of result.excluded) expect(row.flags).not.toContain('range-width-mismatch');
   });
+
+  /**
+   * The absolute anchor this suite went without.
+   *
+   * Every other assertion here is relative — `> 0`, `< tvlUsd`, non-empty,
+   * monotonic — so mutating `activeTvlWithin(histogram, declaredBps)` to
+   * `declaredBps * 0.9` left the whole suite green. That is the same shape as the
+   * `binsNeededFor` bug: a denominator summed over a band narrower than the one
+   * the row declares, which is invisible to every relative check and always
+   * understates `T_δ`.
+   *
+   * So one pool is pinned to the dollar. These are recorded facts about this
+   * capture rather than invariants: re-recording `fixtures/meteora-rpc/` moves
+   * them, and the README's Meteora figures move with them. What makes them worth
+   * pinning is that nothing else here would notice a band-width regression —
+   * summing at ±450 instead of ±500 gives $2,632,432 against $2,755,337, a 4.5%
+   * gap that no `> 0` can see.
+   */
+  it('pins the reference pool to the dollar', async () => {
+    const { pools } = await meteoraAdapter.listPools({ symbols: ['USDC'], limit: 60 });
+    const p = pools.find((x) => x.poolId === '5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6');
+    expect(p).toBeDefined();
+    expect(p!.pair).toEqual(['SOL', 'USDC']);
+    expect(p!.binStep).toBe(4);
+    expect(p!.activeTvlFidelity).toBe('tick-level');
+    expect(p!.activeTvlDeltaBps).toBe(500);
+
+    expect(p!.tvlUsd).toBeCloseTo(5_027_463.8, 1);
+    // `T_500`, which is what `activeTvlUsd` reports at the declared width.
+    expect(p!.activeTvlUsd!).toBeCloseTo(2_755_336.81, 2);
+    expect(activeTvlWithin(p!.liquidityHistogram!, 100)).toBeCloseTo(947_167.37, 2);
+    // 54.81% of headline TVL in range at ±500bp, 18.84% at ±100bp — the two
+    // figures the README publishes for this pool.
+    expect(p!.activeTvlUsd! / p!.tvlUsd).toBeCloseTo(0.5481, 4);
+    expect(activeTvlWithin(p!.liquidityHistogram!, 100) / p!.tvlUsd).toBeCloseTo(0.1884, 4);
+
+    expect(p!.liquidityHistogram).toHaveLength(259);
+  });
+
+  /**
+   * The declared width has to be inside the band the bins were read over.
+   *
+   * This is the assertion that fails on the pre-fix `binsNeededFor`: 122 bins at
+   * a 4bp step span -476.19..500.00 while the row declares ±500bp, so
+   * `othersLiquidityInRange` sums at -500 over bins nobody fetched. Pinned on
+   * this pool rather than asserted across all of them, because a histogram drops
+   * unfunded bins — a pool with nothing beyond ±300 legitimately spans less than
+   * it covers, which is why coverage is declared rather than inferred.
+   */
+  it('reads bins past the width it declares, on both sides', async () => {
+    const { pools } = await meteoraAdapter.listPools({ symbols: ['USDC'], limit: 60 });
+    const p = pools.find((x) => x.poolId === '5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6')!;
+    const bps = p.liquidityHistogram!.map((b) => b.bpsFromPeg);
+
+    expect(Math.min(...bps)).toBeCloseTo(-502.82, 2);
+    expect(Math.max(...bps)).toBeCloseTo(529.44, 2);
+    // The downside is the binding one, and it is the one that used to fall short.
+    expect(Math.abs(Math.min(...bps))).toBeGreaterThanOrEqual(p.activeTvlDeltaBps!);
+    expect(Math.max(...bps)).toBeGreaterThanOrEqual(p.activeTvlDeltaBps!);
+  });
+
+  it('enriches exactly the budget, and lists the rest', async () => {
+    const { pools, skipped } = await meteoraAdapter.listPools({ symbols: ['USDC'], limit: 60 });
+    // Absolute, so a change in how the budget is spent has to be deliberate.
+    expect(pools).toHaveLength(56);
+    expect(skipped).toHaveLength(0);
+    expect(pools.filter((p) => p.activeTvlFidelity === 'tick-level')).toHaveLength(8);
+    expect(pools.filter((p) => p.activeTvlFidelity === 'unavailable')).toHaveLength(48);
+  });
 });

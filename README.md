@@ -56,17 +56,32 @@ Live data, at the time of writing:
 |---|---|---:|---:|---:|
 | SOL/USDC | Orca | $25.5M | $115k (±4bp) | **0.45%** |
 | WETH/USDC | Uniswap v3 (Base) | $112M | $8.76M (±60bp) | 7.81% |
-| PUMP/USDC | Meteora (DLMM) | $1.04M | $37.9k (±500bp) | 3.64% |
-| SOL/USDC | Meteora (DLMM) | $5.06M | $947k (±100bp) | 18.7% |
+| PUMP/USDC | Meteora (DLMM) | $1.04M | $38.4k (±500bp) | 3.71% |
+| SOL/USDC | Meteora (DLMM) | $5.03M | $947k (±100bp) | 18.8% |
 | USDC/USDT | Orca | $1.18M | $638k (±1bp) | 53.9% |
 
-From 0.45% to 54% depending on venue and range width — which is precisely why one headline number cannot rank these. The two Meteora rows are the same venue, the same day and the same query: one pool holds 18.7% of its headline TVL within a percent of the price, the other 3.6% within five percent.
+From 0.45% to 54% depending on venue and range width — which is precisely why one headline number cannot rank these. The two Meteora rows are the same venue, the same day and the same query: one pool holds 18.8% of its headline TVL within a percent of the price, the other 3.7% within five percent.
+
+Meteora is the one venue that measures both widths on the same pool, because its bins are read individually. All eight enriched rows from one capture:
+
+| Pool | binStep | Headline TVL | ±100bp | share | ±500bp | share |
+|---|---:|---:|---:|---:|---:|---:|
+| SOL/USDC | 4 | $5,027,464 | $947,167 | 18.84% | $2,755,337 | 54.81% |
+| HYPE/USDC | 20 | $4,729,473 | $172,683 | 3.65% | $781,740 | 16.53% |
+| PENGU/USDC | 25 | $3,103,034 | $18,171 | 0.59% | $90,462 | 2.92% |
+| SOL/USDC | 10 | $2,803,226 | $268,115 | 9.56% | $1,154,804 | 41.20% |
+| TRUMP/USDC | 10 | $2,796,456 | $235,332 | 8.42% | $556,612 | 19.90% |
+| SOL/USDC | 20 | $1,996,863 | $130,089 | 6.51% | $628,603 | 31.48% |
+| BP/USDC | 50 | $1,866,015 | $17,482 | 0.94% | $86,108 | 4.61% |
+| PUMP/USDC | 20 | $1,035,708 | $7,920 | 0.76% | $38,423 | 3.71% |
+
+Three SOL/USDC pools, same pair, same chain, same minute: 54.81%, 41.20% and 31.48% in range at ±500bp. The bin step is most of the difference, and no headline TVL shows it.
 
 ## Quickstart
 
 ```bash
 pnpm install
-pnpm test          # 393 TypeScript tests
+pnpm test          # 424 TypeScript tests
 pnpm api           # scoring engine on :8787
 pnpm web           # UI on :3000
 
@@ -323,7 +338,7 @@ Also worth stating plainly: **Arc's native gas is 18 decimals, not 6.** Several 
 - ~~**Meteora has no adapter.**~~ **Built, and reading real bins.** The legacy REST host is still retired; the current one (`dlmm.datapi.meteora.ag`) supplies the listing, and the denominator comes from the chain — `BinArray` accounts over plain Solana JSON-RPC, no DLMM SDK, so the reads replay from fixtures like every other adapter.
 - ~~**No `tick-level` fidelity.**~~ **Meteora reaches it, for a rationed few pools per scan.** Constant-sum bins make it the only source that can answer "how much is in range at ±δ" for any δ within the ±500bp its bins were read over — rather than at one tick interval — and the only one that produces a real `liquidityHistogram`. Each row declares that width, and a wider question is refused rather than answered from bins nobody fetched. But bins are on-chain accounts costing three RPC calls per pool, so only the top 8 pools that clear a $1M TVL and $100k daily-volume floor get read; **every other Meteora row is `unavailable`**, and says so. Orca and Uniswap v3 remain the two venues with a denominator on every row.
 
-  A floor cleared is not a deposit absorbed. The floors are on *headline* TVL, because the quantity that actually matters — in-range liquidity — is only knowable after the read the floor exists to ration. PUMP/USDC clears $1M headline while holding $37,904 at ±500bp, 27x smaller. A floor sized from the deposit is the honest version and is not built.
+  A floor cleared is not a deposit absorbed. The floors are on *headline* TVL, because the quantity that actually matters — in-range liquidity — is only knowable after the read the floor exists to ration. PUMP/USDC clears $1M headline while holding $38,423 at ±500bp, 27x smaller. A floor sized from the deposit is the honest version and is not built.
 
 ## Deploying
 
