@@ -13,6 +13,7 @@ import {
   type BinSource,
   type MeteoraPool,
 } from './meteora.js';
+import { activeTvlWithin } from './meteoraBins.js';
 
 /** The live SOL-USDC row, trimmed to the fields the normalizer reads. */
 const SOL_USDC: MeteoraPool = {
@@ -157,7 +158,9 @@ describe('the adapter surface', () => {
       { ...SOL_USDC, address: 'B', token_y: { ...SOL_USDC.token_y, symbol: 'BONK' }, token_x: { ...SOL_USDC.token_x, symbol: 'WIF' } },
       { ...SOL_USDC, address: 'C' },
     ];
-    const adapter = createMeteoraAdapter({ fetchPools: async () => rows });
+    // `topK: 0` here and below: `fetchPools` only stubs the REST half, so a
+    // filtering test left on the default topK would reach for a live RPC.
+    const adapter = createMeteoraAdapter({ fetchPools: async () => rows, topK: 0 });
     const { pools } = await adapter.listPools({ symbols: ['USDC'], limit: 2, now: 1 });
     expect(pools.map((p) => p.poolId)).toEqual([SOL_USDC.address, 'C']);
   });
@@ -169,7 +172,7 @@ describe('the adapter surface', () => {
       { ...SOL_USDC, address: 'MEME', token_x: { ...SOL_USDC.token_x, symbol: 'WIF' }, token_y: { ...SOL_USDC.token_y, symbol: 'BONK' } },
       SOL_USDC,
     ];
-    const adapter = createMeteoraAdapter({ fetchPools: async () => rows });
+    const adapter = createMeteoraAdapter({ fetchPools: async () => rows, topK: 0 });
     const { pools } = await adapter.listPools({ now: 1 });
     expect(pools.map((p) => p.poolId)).toEqual([SOL_USDC.address]);
   });
@@ -208,7 +211,12 @@ describe('replaying the recorded response', () => {
   });
 
   it('normalizes the captured page without skipping everything', async () => {
-    const { pools, skipped } = await meteoraAdapter.listPools({ symbols: ['USDC'], limit: 60 });
+    // `topK: 0` keeps this about the REST mapping alone. The default adapter now
+    // enriches its busiest rows to `tick-level`, and asserting `unavailable`
+    // across the page would turn this into a test of the bin reader — which the
+    // conformance suite below owns.
+    const adapter = createMeteoraAdapter({ topK: 0 });
+    const { pools, skipped } = await adapter.listPools({ symbols: ['USDC'], limit: 60 });
     expect(pools.length).toBeGreaterThan(0);
     for (const p of pools) {
       expect(p.dex).toBe('meteora-dlmm');
@@ -411,5 +419,134 @@ describe('an enriched pool survives rank()', () => {
     const result = rank([pool!], { depositUsd: 1_000, now: 1 });
     expect(result.excluded.flatMap((r) => r.flags)).not.toContain('range-width-mismatch');
     expect(result.ranked.map((r) => r.poolId)).toEqual([row.address]);
+  });
+});
+
+describe('listPools enrichment', () => {
+  it('enriches only the top K by fee ratio, leaving the rest at unavailable', async () => {
+    const rows = [withRatio('low', 0.001), withRatio('high', 0.9)];
+    const adapter = createMeteoraAdapter({
+      fetchPools: async () => rows,
+      topK: 1,
+      binSource: async () => ({
+        activeId: 0,
+        binStep: 4,
+        bins: [{ binId: 0, amountX: 0n, amountY: 100n * 10n ** 6n }],
+        coveredBps: 500,
+      }),
+    });
+    const { pools } = await adapter.listPools({ symbols: ['USDC'], now: 1 });
+    const byId = new Map(pools.map((p) => [p.poolId, p]));
+    expect(byId.get('high')!.activeTvlFidelity).toBe('tick-level');
+    expect(byId.get('low')!.activeTvlFidelity).toBe('unavailable');
+  });
+
+  it('makes no RPC calls when topK is 0', async () => {
+    let called = 0;
+    const adapter = createMeteoraAdapter({
+      fetchPools: async () => [SOL_USDC],
+      topK: 0,
+      binSource: async () => {
+        called += 1;
+        throw new Error('should not be called');
+      },
+    });
+    const { pools } = await adapter.listPools({ symbols: ['USDC'], now: 1 });
+    expect(called).toBe(0);
+    expect(pools[0]!.activeTvlFidelity).toBe('unavailable');
+  });
+
+  it('never spends the budget on a pool normalization skipped', async () => {
+    // The `kept` filter. A skipped row keeps its raw fee ratio, so ranking the
+    // raw page would hand the top slot to a pool that has no output row — the
+    // RPC call would be paid for and then discarded, and on a page where the
+    // skipped rows are the busiest, every request would be wasted.
+    const asked: string[] = [];
+    const adapter = createMeteoraAdapter({
+      fetchPools: async () => [
+        withRatio('GOOD', 0.1),
+        { ...withRatio('DEAD', 0.9), tvl: 0 },
+      ],
+      topK: 1,
+      binSource: async (poolId) => {
+        asked.push(poolId);
+        return {
+          activeId: 0,
+          binStep: 4,
+          bins: [{ binId: 0, amountX: 0n, amountY: 100n * 10n ** 6n }],
+          coveredBps: 500,
+        };
+      },
+    });
+
+    const { pools, skipped } = await adapter.listPools({ symbols: ['USDC'], now: 1 });
+    expect(asked).toEqual(['GOOD']);
+    expect(skipped.map((s) => s.poolId)).toEqual(['DEAD']);
+    expect(pools[0]!.activeTvlFidelity).toBe('tick-level');
+  });
+});
+
+/**
+ * The bin reader against real recorded chain state.
+ *
+ * `createRpcBinSource` has no other coverage: every test above injects a
+ * `BinSource`, so the account slicing, the gPA discovery filters and the
+ * index-agreement check are only ever exercised here, through `postJson` and
+ * the recorded `fixtures/meteora-rpc/` payloads.
+ *
+ * The context must stay `{ symbols: ['USDC'], limit: 60 }` — the same one the
+ * capture ran with. A different limit or symbol set changes which pools survive
+ * the filter, which changes the top-K, which asks for bin data nobody recorded.
+ */
+describe('bin data against the recorded chain state', () => {
+  const previousMode = process.env.SPIDEY_FETCH_MODE;
+
+  beforeAll(() => {
+    process.env.SPIDEY_FETCH_MODE = 'fixture';
+  });
+
+  afterAll(() => {
+    if (previousMode === undefined) delete process.env.SPIDEY_FETCH_MODE;
+    else process.env.SPIDEY_FETCH_MODE = previousMode;
+  });
+
+  it('produces an in-range denominator well below headline TVL', async () => {
+    const { pools } = await meteoraAdapter.listPools({ symbols: ['USDC'], limit: 60 });
+    const tickLevel = pools.filter((p) => p.activeTvlFidelity === 'tick-level');
+    expect(tickLevel.length).toBeGreaterThan(0);
+
+    for (const p of tickLevel) {
+      expect(p.activeTvlUsd).not.toBeNull();
+      expect(p.activeTvlUsd!).toBeGreaterThan(0);
+      expect(p.activeTvlUsd!).toBeLessThan(p.tvlUsd);
+      expect(p.liquidityHistogram!.length).toBeGreaterThan(0);
+      expect(p.activeTvlDeltaBps!).toBeGreaterThanOrEqual(p.binStep!);
+    }
+  });
+
+  it('concentrates liquidity monotonically towards the peg', async () => {
+    // The concentration thesis, as the only form of it that is shape-agnostic.
+    // A per-pool percentage band is not assertable: the same code measured 56%
+    // of headline TVL within ±500bps on the reference pool and single digits on
+    // a wide-binned one, so a band would encode one pool's shape as a rule.
+    // Monotonicity holds for every histogram whatever its shape.
+    const { pools } = await meteoraAdapter.listPools({ symbols: ['USDC'], limit: 60 });
+    const tickLevel = pools.filter((p) => p.activeTvlFidelity === 'tick-level');
+    expect(tickLevel.length).toBeGreaterThan(0);
+
+    for (const p of tickLevel) {
+      const narrow = activeTvlWithin(p.liquidityHistogram!, 100);
+      const wide = activeTvlWithin(p.liquidityHistogram!, 500);
+      expect(narrow).toBeGreaterThan(0);
+      expect(wide).toBeGreaterThan(0);
+      expect(narrow).toBeLessThanOrEqual(wide);
+    }
+  });
+
+  it('ranks the enriched rows instead of excluding them', async () => {
+    const { pools } = await meteoraAdapter.listPools({ symbols: ['USDC'], limit: 60 });
+    const result = rank(pools, { depositUsd: 10_000 });
+    expect(result.ranked.length).toBeGreaterThan(0);
+    for (const row of result.excluded) expect(row.flags).not.toContain('range-width-mismatch');
   });
 });

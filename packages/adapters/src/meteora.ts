@@ -123,7 +123,10 @@ export function normalizeMeteoraPool(
     feeBpsObserved24h: volume24h > 0 ? (fees24h / volume24h) * 10_000 : null,
 
     tvlUsd: pool.tvl,
-    // Phase 1 has no bin data. Excluded, never approximated from reserves.
+    // The REST row carries no bin data, and `token_*_amount` are whole-pool
+    // reserves — nothing here narrows to the active range. `enrichWithBins`
+    // fills these in for the pools that get an RPC read; the rest stay honestly
+    // unavailable rather than approximated from reserves.
     activeTvlUsd: null,
     activeTvlDeltaBps: null,
     activeTvlFidelity: 'unavailable',
@@ -162,6 +165,12 @@ export type MeteoraOptions = {
    * the fixture-aware `getJson`.
    */
   fetchPools?: (ctx: AdapterContext) => Promise<MeteoraPool[]>;
+  /** Pools to enrich with bin data. 0 disables the RPC path entirely. */
+  topK?: number;
+  coverageBps?: number;
+  rpcUrl?: string;
+  /** Seam for tests; production builds an RPC-backed source. */
+  binSource?: BinSource;
 };
 
 async function fetchPoolsLive(ctx: AdapterContext, pageSize: number): Promise<MeteoraPool[]> {
@@ -207,7 +216,24 @@ export function createMeteoraAdapter(options: MeteoraOptions = {}): VenueAdapter
         if (pools.length >= limit) break;
       }
 
-      return { pools, skipped };
+      const { topK = DEFAULT_TOP_K, coverageBps, rpcUrl, binSource } = options;
+      if (topK <= 0 || pools.length === 0) return { pools, skipped };
+
+      // Rank among the rows that actually survived normalization — enriching a
+      // pool that was skipped would spend the budget on a row nobody sees.
+      const kept = new Set(pools.map((p) => p.poolId));
+      const chosen = topKByFeeRatio(
+        raw.filter((row) => kept.has(row.address)),
+        topK,
+      );
+
+      const enriched = await enrichWithBins(pools, {
+        source: binSource ?? createRpcBinSource({ rpcUrl, signal: ctx.signal }),
+        rows: chosen,
+        coverageBps,
+      });
+
+      return { pools: enriched, skipped };
     },
   };
 }
