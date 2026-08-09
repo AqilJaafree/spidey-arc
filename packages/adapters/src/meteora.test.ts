@@ -1212,11 +1212,23 @@ describe('bin data against the recorded chain state', () => {
    * understates `T_δ`.
    *
    * So one pool is pinned to the dollar. These are recorded facts about this
-   * capture rather than invariants: re-recording `fixtures/meteora-rpc/` moves
-   * them, and the README's Meteora figures move with them. What makes them worth
+   * capture rather than invariants: re-recording `fixtures/meteora*` moves them,
+   * and the README's Meteora figures move with them. What makes them worth
    * pinning is that nothing else here would notice a band-width regression —
-   * summing at ±450 instead of ±500 gives $2,632,432 against $2,755,337, a 4.5%
+   * summing at ±450 instead of ±500 gives $2,630,760 against $2,754,735, a 4.5%
    * gap that no `> 0` can see.
+   *
+   * MAINTENANCE, deliberately manual: every number below is pinned to the
+   * committed fixtures and has to be re-derived when they are re-recorded. The
+   * cost is the point — it forces someone to look at what moved instead of
+   * letting a drift through. To re-derive:
+   *
+   *     SPIDEY_FETCH_MODE=fixture npx tsx -e "
+   *       const { meteoraAdapter } = await import('./packages/adapters/src/meteora.js');
+   *       const { activeTvlWithin } = await import('./packages/adapters/src/meteoraBins.js');
+   *       const { pools } = await meteoraAdapter.listPools({ symbols: ['USDC'], limit: 60 });
+   *       const p = pools.find((x) => x.poolId === '5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6');
+   *       console.log(pools.length, p.tvlUsd, p.activeTvlUsd, activeTvlWithin(p.liquidityHistogram, 100), p.liquidityHistogram.length);"
    */
   it('pins the reference pool to the dollar', async () => {
     const { pools } = await meteoraAdapter.listPools({ symbols: ['USDC'], limit: 60 });
@@ -1227,14 +1239,14 @@ describe('bin data against the recorded chain state', () => {
     expect(p!.activeTvlFidelity).toBe('tick-level');
     expect(p!.activeTvlDeltaBps).toBe(500);
 
-    expect(p!.tvlUsd).toBeCloseTo(5_027_463.8, 1);
+    expect(p!.tvlUsd).toBeCloseTo(5_025_663.34, 1);
     // `T_500`, which is what `activeTvlUsd` reports at the declared width.
-    expect(p!.activeTvlUsd!).toBeCloseTo(2_755_336.81, 2);
-    expect(activeTvlWithin(p!.liquidityHistogram!, 100)).toBeCloseTo(947_167.37, 2);
-    // 54.81% of headline TVL in range at ±500bp, 18.84% at ±100bp — the two
+    expect(p!.activeTvlUsd!).toBeCloseTo(2_754_734.96, 2);
+    expect(activeTvlWithin(p!.liquidityHistogram!, 100)).toBeCloseTo(945_285.82, 2);
+    // 54.81% of headline TVL in range at ±500bp, 18.81% at ±100bp — the two
     // figures the README publishes for this pool.
     expect(p!.activeTvlUsd! / p!.tvlUsd).toBeCloseTo(0.5481, 4);
-    expect(activeTvlWithin(p!.liquidityHistogram!, 100) / p!.tvlUsd).toBeCloseTo(0.1884, 4);
+    expect(activeTvlWithin(p!.liquidityHistogram!, 100) / p!.tvlUsd).toBeCloseTo(0.1881, 4);
 
     expect(p!.liquidityHistogram).toHaveLength(259);
   });
@@ -1264,10 +1276,52 @@ describe('bin data against the recorded chain state', () => {
   it('enriches exactly the budget, and lists the rest', async () => {
     const { pools, skipped } = await meteoraAdapter.listPools({ symbols: ['USDC'], limit: 60 });
     // Absolute, so a change in how the budget is spent has to be deliberate.
-    expect(pools).toHaveLength(56);
+    // Pinned to the capture, like the figures above: the recorded page carries 57
+    // USDC pools and `DEFAULT_TOP_K` of them clear the floors.
+    expect(pools).toHaveLength(57);
     expect(skipped).toHaveLength(0);
     expect(pools.filter((p) => p.activeTvlFidelity === 'tick-level')).toHaveLength(8);
-    expect(pools.filter((p) => p.activeTvlFidelity === 'unavailable')).toHaveLength(48);
+    expect(pools.filter((p) => p.activeTvlFidelity === 'unavailable')).toHaveLength(49);
   });
 
+  /**
+   * The candles, replayed, and the reason this assertion is not `>= 0`.
+   *
+   * `enrichWithBins` swallows a failed range read by design — including
+   * `FixtureMissingError` — so without an assertion that the series is actually
+   * *there*, deleting `fixtures/meteora/`'s OHLCV captures would leave this whole
+   * suite green on the fallback band. That is the same silent-degradation shape
+   * the adapter exists to avoid, one level up.
+   */
+  it('carries an observed volatility series on every enriched row', async () => {
+    const { pools } = await meteoraAdapter.listPools({ symbols: ['USDC'], limit: 60 });
+    const tickLevel = pools.filter((p) => p.activeTvlFidelity === 'tick-level');
+    expect(tickLevel).toHaveLength(8);
+
+    for (const p of tickLevel) {
+      expect(p.daily24hRangesBps).toHaveLength(OHLCV_WINDOW_DAYS);
+      // A zero range is the flattering value and would mean a broken candle got
+      // through; the band is the week, so it is at least the widest single day.
+      for (const range of p.daily24hRangesBps!) expect(range).toBeGreaterThan(0);
+      const band = Math.max(...p.priceHistogram.map((b) => b.bpsFromPeg));
+      expect(band).toBeGreaterThanOrEqual(Math.max(...p.daily24hRangesBps!));
+      // Not the fallback: `modelledRangeFor(500)` is 1000 and no enriched row in
+      // this capture traversed exactly that.
+      expect(band).not.toBeCloseTo(modelledRangeFor(500), 6);
+    }
+
+    // The claim, on real pools: capture varies, and it is not 1.0 anywhere.
+    const result = rank(pools, { depositUsd: 10_000, now: 1_786_262_400_000 });
+    const captures = result.ranked
+      .filter((r) => r.dex === 'meteora-dlmm' && r.volumeCapture !== null)
+      .map((r) => r.volumeCapture!);
+    expect(captures.length).toBeGreaterThan(1);
+    expect(new Set(captures.map((c) => c.toFixed(4))).size).toBeGreaterThan(1);
+    for (const c of captures) expect(c).toBeLessThan(1);
+
+    // And adverse selection is no longer nil for every Meteora row: at ±500bp,
+    // PUMP-USDC left its range on all seven recorded days.
+    const pump = result.ranked.find((r) => r.poolId === '9SMp4yLKGtW9TnLimfVPkDARsyNSfJw43WMke4r7KoZj');
+    expect(pump!.entry!.adverseSelectionCost).toBeCloseTo(0.025, 6);
+  });
 });

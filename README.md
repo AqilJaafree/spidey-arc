@@ -56,8 +56,8 @@ Live data, at the time of writing:
 |---|---|---:|---:|---:|
 | SOL/USDC | Orca | $25.5M | $115k (±4bp) | **0.45%** |
 | WETH/USDC | Uniswap v3 (Base) | $112M | $8.76M (±60bp) | 7.81% |
-| PUMP/USDC | Meteora (DLMM) | $1.04M | $38.4k (±500bp) | 3.71% |
-| SOL/USDC | Meteora (DLMM) | $5.03M | $947k (±100bp) | 18.8% |
+| PUMP/USDC | Meteora (DLMM) | $1.03M | $38.6k (±500bp) | 3.74% |
+| SOL/USDC | Meteora (DLMM) | $5.03M | $945k (±100bp) | 18.8% |
 | USDC/USDT | Orca | $1.18M | $638k (±1bp) | 53.9% |
 
 From 0.45% to 54% depending on venue and range width — which is precisely why one headline number cannot rank these. The two Meteora rows are the same venue, the same day and the same query: one pool holds 18.8% of its headline TVL within a percent of the price, the other 3.7% within five percent.
@@ -66,22 +66,37 @@ Meteora is the one venue that measures both widths on the same pool, because its
 
 | Pool | binStep | Headline TVL | ±100bp | share | ±500bp | share |
 |---|---:|---:|---:|---:|---:|---:|
-| SOL/USDC | 4 | $5,027,464 | $947,167 | 18.84% | $2,755,337 | 54.81% |
-| HYPE/USDC | 20 | $4,729,473 | $172,683 | 3.65% | $781,740 | 16.53% |
-| PENGU/USDC | 25 | $3,103,034 | $18,171 | 0.59% | $90,462 | 2.92% |
-| SOL/USDC | 10 | $2,803,226 | $268,115 | 9.56% | $1,154,804 | 41.20% |
-| TRUMP/USDC | 10 | $2,796,456 | $235,332 | 8.42% | $556,612 | 19.90% |
-| SOL/USDC | 20 | $1,996,863 | $130,089 | 6.51% | $628,603 | 31.48% |
-| BP/USDC | 50 | $1,866,015 | $17,482 | 0.94% | $86,108 | 4.61% |
-| PUMP/USDC | 20 | $1,035,708 | $7,920 | 0.76% | $38,423 | 3.71% |
+| SOL/USDC | 4 | $5,025,663 | $945,286 | 18.81% | $2,754,735 | 54.81% |
+| HYPE/USDC | 20 | $4,729,443 | $172,930 | 3.66% | $783,238 | 16.56% |
+| PENGU/USDC | 25 | $3,103,015 | $18,172 | 0.59% | $90,468 | 2.92% |
+| SOL/USDC | 10 | $2,801,328 | $266,380 | 9.51% | $1,152,938 | 41.16% |
+| TRUMP/USDC | 10 | $2,798,450 | $236,052 | 8.44% | $556,901 | 19.90% |
+| SOL/USDC | 20 | $1,994,558 | $130,714 | 6.55% | $629,676 | 31.57% |
+| BP/USDC | 50 | $1,865,977 | $17,461 | 0.94% | $85,992 | 4.61% |
+| PUMP/USDC | 20 | $1,032,360 | $8,359 | 0.81% | $38,599 | 3.74% |
 
-Three SOL/USDC pools, same pair, same chain, same minute: 54.81%, 41.20% and 31.48% in range at ±500bp. The bin step is most of the difference, and no headline TVL shows it.
+Three SOL/USDC pools, same pair, same chain, same minute: 54.81%, 41.16% and 31.57% in range at ±500bp. The bin step is most of the difference, and no headline TVL shows it.
+
+The denominator is half the question. The other half is whether the volume ever reaches your range and whether your range survives the day, and Meteora publishes daily OHLCV, so both are measured rather than assumed. `high`/`low` give the true peak-to-trough range — 1.4x to **40x** what close-to-close reports on the same days, because a day that moves 317bp and comes back reads as an 8bp day on closes and knocks the position out either way. Same eight pools, same capture:
+
+| Pool | median 24h range | week's traversed band | volume captured at ±500bp | days out of range |
+|---|---:|---:|---:|---:|
+| SOL/USDC (4) | 268bp | 678bp | 70.7% | 0 / 7 |
+| SOL/USDC (10) | 263bp | 671bp | 70.7% | 0 / 7 |
+| SOL/USDC (20) | 243bp | 682bp | 70.7% | 0 / 7 |
+| TRUMP/USDC | 233bp | 565bp | 85.4% | 1 / 7 |
+| HYPE/USDC | 429bp | 1,296bp | 36.6% | 3 / 7 |
+| PENGU/USDC | 460bp | 778bp | 61.0% | 3 / 7 |
+| BP/USDC | 994bp | 2,147bp | 22.0% | 5 / 7 |
+| PUMP/USDC | 854bp | 2,583bp | 17.1% | 7 / 7 |
+
+Every one of those pools used to report the same 51% capture and the same zero exit risk, because the volume band was a constant and no volatility series was supplied at all. PUMP/USDC now models 4x less fee flow than SOL/USDC at the same width and pays a 250bp/day adverse-selection charge for leaving its range every single day. The band is the week the price traversed, not the median day, because a range is not re-centred at midnight and `expectedHoldDays` defaults to 7 — a band narrower than the ±500bp being asked about would put every dollar of volume inside the range and quietly report full capture again.
 
 ## Quickstart
 
 ```bash
 pnpm install
-pnpm test          # 424 TypeScript tests
+pnpm test          # 443 TypeScript tests
 pnpm api           # scoring engine on :8787
 pnpm web           # UI on :3000
 
@@ -335,8 +350,10 @@ Also worth stating plainly: **Arc's native gas is 18 decimals, not 6.** Several 
   **`pnpm keeper:report-nav` now refreshes the mark**, which narrows the liveness dependency without closing it. The obvious fix — re-post the current number to reset the clock — would have been worse than the bug: it converts the safe failure (refuse to pay) into the unsafe one (pay at par out of a loss nobody marked down). So the command *verifies* instead. The hub's deployed capital is USDC held by `CctpReturnRelay` on Base, not an LP position, so its value is a balance read rather than an estimate; an unchanged mark is a finding, and a failed read exits non-zero rather than posting anything. The contract's own bounds are read from the vault each run, so the keeper cannot propose a step the chain rejects.
 
   What is still missing is a **scheduler** — nothing runs it hourly. And the posting branch has not executed against a live vault: as of 2026-08-08 the hub's `deployedAssets` is 0, so the run exercises the reads, the bounds and the early return, not the write. The failure path is proven (a dead RPC exits 1 naming the failed call). In-flight burns count as zero until burn-log scanning lands, which understates assets and therefore caps *downward* — the direction that haircuts rather than overpays, and it logs `capped` when it happens.
-- ~~**Meteora has no adapter.**~~ **Built, and reading real bins.** The legacy REST host is still retired; the current one (`dlmm.datapi.meteora.ag`) supplies the listing, and the denominator comes from the chain — `BinArray` accounts over plain Solana JSON-RPC, no DLMM SDK, so the reads replay from fixtures like every other adapter.
+- ~~**Meteora has no adapter.**~~ **Built, and reading real bins.** The legacy REST host is still retired; the current one (`dlmm.datapi.meteora.ag`) supplies the listing and the daily candles, and the denominator comes from the chain — `BinArray` accounts over plain Solana JSON-RPC, no DLMM SDK, so the reads replay from fixtures like every other adapter.
 - ~~**No `tick-level` fidelity.**~~ **Meteora reaches it, for a rationed few pools per scan.** Constant-sum bins make it the only source that can answer "how much is in range at ±δ" for any δ within the ±500bp its bins were read over — rather than at one tick interval — and the only one that produces a real `liquidityHistogram`. Each row declares that width, and a wider question is refused rather than answered from bins nobody fetched. But bins are on-chain accounts costing three RPC calls per pool, so only the top 8 pools that clear a $1M TVL and $100k daily-volume floor get read; **every other Meteora row is `unavailable`**, and says so. Orca and Uniswap v3 remain the two venues with a denominator on every row.
+
+  The same rationing now covers the candles: `daily24hRangesBps` and the volume band only change a score for a pool that has a denominator, so the OHLCV read follows the bin read rather than the listing — 8 requests per scan instead of 57. When it fails, or returns the `data: []` this host answers with past a 100-day window, the row keeps its bins and falls back to the modelled constant band. It never falls back to an *empty* range series: `rank.ts` reads a missing series as `p_exit = 0`, which is the most flattering value in §7.4's inequality, so "no volatility measured" must stay distinguishable from "no volatility".
 
   A floor cleared is not a deposit absorbed. The floors are on *headline* TVL, because the quantity that actually matters — in-range liquidity — is only knowable after the read the floor exists to ration. PUMP/USDC clears $1M headline while holding $38,423 at ±500bp, 27x smaller. A floor sized from the deposit is the honest version and is not built.
 
@@ -399,7 +416,7 @@ SPIDEY_FETCH_MODE=fixture pnpm test     # offline, the default
 SPIDEY_FETCH_MODE=record pnpm capture   # re-record from live APIs
 ```
 
-A missing fixture in `fixture` mode is an error — it never silently falls back to the network.
+A missing fixture in `fixture` mode is an error — it never silently falls back to the network. `pnpm capture` re-records every venue at once, on purpose: the Meteora REST page, its candles and its `BinArray` reads have to describe the same minute, and a partial re-record leaves a denominator from one day beside a price band from another.
 
 ## Toolchain notes
 
