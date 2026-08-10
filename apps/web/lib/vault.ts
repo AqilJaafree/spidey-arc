@@ -204,9 +204,8 @@ export function depositReadiness(
         code: 'DepositCapExceeded',
         title: 'Over the deposit cap',
         detail:
-          `The vault caps total assets at ${usdc(vault.depositCap)} and holds ` +
-          `${usdc(vault.totalAssets)}, so it can take ${usdc(headroom)} more. The cap exists so ` +
-          `the vault does not become the dilution problem it is built to detect.`,
+          `Cap ${usdc(vault.depositCap)}, held ${usdc(vault.totalAssets)} — room for ` +
+          `${usdc(headroom)}. The cap stops the vault becoming the dilution problem it detects.`,
       },
     };
   }
@@ -313,9 +312,8 @@ export function claimReadiness(
         code: 'EpochNotSettled',
         title: `Epoch ${holder.pendingEpoch} is still open`,
         detail:
-          `Withdrawals are asynchronous by design — capital in a position on another chain ` +
-          `cannot be returned in the same transaction. The operator closes the epoch once that ` +
-          `capital is back on Arc, and the claim becomes collectable then.`,
+          `Exits are asynchronous by design. The operator closes the epoch once the capital ` +
+          `backing it is back on Arc; the claim is collectable then.`,
       },
     };
   }
@@ -336,11 +334,10 @@ export function claimReadiness(
             code: 'NavStale',
             title: 'The mark is too old to pay against',
             detail:
-              `The vault holds less idle USDC than it owes, so what it can cover depends on the ` +
-              `reported value of capital still deployed — and that mark was last updated ` +
-              `${humanDuration(age)} ago, past the ${humanDuration(vault.maxNavAge)} bound. ` +
-              `Paying at par out of an unrefreshed number would hand a loss nobody has marked ` +
-              `to whoever claims last, so the vault holds instead. A fresh NAV report clears it.`,
+              `Idle falls short of the queue, so coverage depends on the mark — and it is ` +
+              `${humanDuration(age)} old, past the ${humanDuration(vault.maxNavAge)} bound. ` +
+              `Paying at par out of an unrefreshed number would hand an unmarked loss to ` +
+              `whoever claims last. A NAV report clears it.`,
           },
         };
       }
@@ -361,10 +358,9 @@ export function claimReadiness(
         code: 'InsufficientIdle',
         title: 'The vault cannot cover this yet',
         detail:
-          `The claim is ${usdc(payout)} against ${usdc(vault.idle)} idle. Capital a venue still ` +
-          `carries on its book counts toward coverage, so no haircut applies — but book value is ` +
-          `not cash, and only cash pays a claim. Either the capital returns, or the residual is ` +
-          `written off so the haircut can do its job.`,
+          `${usdc(payout)} against ${usdc(vault.idle)} idle. Book value at a venue counts toward ` +
+          `coverage, so no haircut applies — but only cash pays a claim. Either the capital ` +
+          `returns, or the residual is written off so the haircut can work.`,
       },
     };
   }

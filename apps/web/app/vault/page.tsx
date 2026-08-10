@@ -1,16 +1,35 @@
 'use client';
 
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { AlertCircle, RefreshCw } from 'lucide-react';
 
+import { CrossChainFlow } from '@/components/CrossChainFlow';
 import { ClaimCard, DepositCard, RequestCard } from '@/components/VaultActions';
 import { SiteHeader } from '@/components/SiteHeader';
+import { AnimatedContent } from '@/components/motion/AnimatedContent';
+import { CountUp } from '@/components/motion/CountUp';
 import { ARC_TESTNET, CONTRACTS, explorerAddress } from '@/lib/chain';
 import { useVaultData } from '@/lib/useVaultData';
 import { formatShares, humanDuration, usdc } from '@/lib/vault';
 import { useWallet } from '@/lib/wallet';
 
-function Figure({ label, value, note }: { label: string; value: string; note?: string }) {
+const money = (n: number) =>
+  `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 })}`;
+
+function Figure({ label, value, note }: { label: string; value: bigint; note?: string }) {
+  const asNumber = useCallback(() => Number(value) / 1e6, [value])();
+  return (
+    <div>
+      <dt className="text-xs text-muted-foreground">{label}</dt>
+      <dd className="tabular mt-0.5 text-lg">
+        <CountUp value={asNumber} format={money} />
+      </dd>
+      {note && <p className="mt-0.5 text-xs text-muted-foreground">{note}</p>}
+    </div>
+  );
+}
+
+function Plain({ label, value, note }: { label: string; value: string; note?: string }) {
   return (
     <div>
       <dt className="text-xs text-muted-foreground">{label}</dt>
@@ -24,7 +43,6 @@ export default function VaultPage() {
   const { address, onArc } = useWallet();
   const [refreshKey, setRefreshKey] = useState(0);
   const { data, error, loading } = useVaultData(address && onArc ? address : null, refreshKey);
-
   const reload = () => setRefreshKey((k) => k + 1);
 
   const navAge = data ? data.now - data.vault.navUpdatedAt : 0n;
@@ -35,18 +53,17 @@ export default function VaultPage() {
       <SiteHeader />
 
       <main className="mx-auto max-w-4xl px-4 py-10 md:px-6 lg:px-8">
-        <section className="mb-10 max-w-2xl space-y-3">
+        <section className="mb-8 max-w-2xl space-y-3">
           <h1 className="text-3xl leading-tight font-semibold tracking-tight text-balance md:text-4xl">
             The vault, on Arc
           </h1>
           <p className="text-base leading-relaxed text-muted-foreground">
-            An ERC-4626 vault over USDC. Deposits mint spUSDC; exits go through a queue, because
-            capital sitting in a position on another chain cannot be returned in the same
-            transaction. Every action below is simulated against the chain before your wallet is
-            asked to sign, so a refusal arrives as a sentence rather than as a failed transaction.
+            ERC-4626 over USDC. Exits go through a queue — capital in a position on another chain
+            cannot come back in the same transaction. Every action is simulated before your wallet
+            signs, so refusals arrive as sentences.
           </p>
           <p className="text-xs text-muted-foreground">
-            {ARC_TESTNET.name} · chain {ARC_TESTNET.id} ·{' '}
+            chain {ARC_TESTNET.id} ·{' '}
             <a
               href={explorerAddress(CONTRACTS.vault)}
               target="_blank"
@@ -84,104 +101,110 @@ export default function VaultPage() {
         )}
 
         {data && (
-          <>
-            <section className="mb-8 rounded border border-border bg-card p-6">
-              <h2 className="mb-4 text-sm font-semibold">Vault state</h2>
-              <dl className="grid grid-cols-2 gap-x-6 gap-y-5 sm:grid-cols-4">
-                <Figure label="Total assets" value={usdc(data.vault.totalAssets)} />
-                <Figure
-                  label="Idle"
-                  value={usdc(data.vault.idle)}
-                  note="on Arc, available now"
-                />
-                <Figure
-                  label="Deployed"
-                  value={usdc(data.vault.deployed)}
-                  note="reported, at venues"
-                />
-                <Figure
-                  label="Coverage"
-                  value={`${data.vault.coverageBps / 100}%`}
-                  note={data.vault.coverageBps === 10_000 ? 'claims paid in full' : 'claims haircut'}
-                />
-                <Figure label="Queued" value={usdc(data.vault.pending)} note="owed to requesters" />
-                <Figure
-                  label="Epoch"
-                  value={`${data.vault.epoch}`}
-                  note={`settled through ${data.vault.lastSettledEpoch}`}
-                />
-                <Figure label="Deposit cap" value={usdc(data.vault.depositCap)} />
-                <Figure
-                  label="Mark age"
-                  value={humanDuration(navAge)}
-                  note={`bound ${humanDuration(data.vault.maxNavAge)}`}
-                />
-              </dl>
+          <div className="space-y-4">
+            <AnimatedContent>
+              <section className="rounded border border-border bg-card p-6">
+                <h2 className="mb-4 text-sm font-semibold">Vault state</h2>
+                <dl className="grid grid-cols-2 gap-x-6 gap-y-5 sm:grid-cols-4">
+                  <Figure label="Total assets" value={data.vault.totalAssets} />
+                  <Figure label="Idle" value={data.vault.idle} note="on Arc" />
+                  <Figure label="Deployed" value={data.vault.deployed} note="reported" />
+                  <Plain
+                    label="Coverage"
+                    value={`${data.vault.coverageBps / 100}%`}
+                    note={data.vault.coverageBps === 10_000 ? 'paid in full' : 'haircut'}
+                  />
+                  <Figure label="Queued" value={data.vault.pending} note="owed out" />
+                  <Plain
+                    label="Epoch"
+                    value={`${data.vault.epoch}`}
+                    note={`settled to ${data.vault.lastSettledEpoch}`}
+                  />
+                  <Figure label="Deposit cap" value={data.vault.depositCap} />
+                  <Plain
+                    label="Mark age"
+                    value={humanDuration(navAge)}
+                    note={`bound ${humanDuration(data.vault.maxNavAge)}`}
+                  />
+                </dl>
 
-              {navExpired && data.vault.deployed > 0n && (
-                <p className="mt-5 border-t border-border pt-4 text-xs leading-relaxed text-warning">
-                  The mark on deployed capital is older than the {humanDuration(data.vault.maxNavAge)}{' '}
-                  bound. While idle covers everything queued this changes nothing — but a claim
-                  larger than idle will be refused rather than paid at par out of a number nobody
-                  has refreshed. A NAV report clears it.
-                </p>
-              )}
-            </section>
+                {navExpired && data.vault.deployed > 0n && (
+                  <p className="mt-5 border-t border-border pt-4 text-xs leading-relaxed text-warning">
+                    The mark is past its {humanDuration(data.vault.maxNavAge)} bound. Harmless while
+                    idle covers the queue; a larger claim will be refused rather than paid at par. A
+                    NAV report clears it.
+                  </p>
+                )}
+              </section>
+            </AnimatedContent>
+
+            <AnimatedContent delay={0.06}>
+              <CrossChainFlow routes={data.routes} hubAssets={data.vault.totalAssets} />
+            </AnimatedContent>
 
             {!address && (
-              <p className="rounded border border-border bg-muted/30 p-5 text-sm text-muted-foreground">
-                Connect a wallet to deposit or withdraw. The figures above are read from the chain
-                and need no connection.
-              </p>
+              <AnimatedContent delay={0.12}>
+                <p className="rounded border border-border bg-muted/30 p-5 text-sm text-muted-foreground">
+                  Connect a wallet to deposit or withdraw. Everything above is read from the chain.
+                </p>
+              </AnimatedContent>
             )}
 
             {address && !onArc && (
-              <p className="rounded border border-warning/40 bg-warning/5 p-5 text-sm text-warning">
-                Your wallet is on another chain. Switch to {ARC_TESTNET.name} using the button in
-                the header — no wallet ships Arc by default, so it will offer to add it first.
-              </p>
+              <AnimatedContent delay={0.12}>
+                <p className="rounded border border-warning/40 bg-warning/5 p-5 text-sm text-warning">
+                  Wrong chain. Switch in the header — no wallet ships Arc, so it will offer to add
+                  it first.
+                </p>
+              </AnimatedContent>
             )}
 
             {address && onArc && data.holder && (
               <>
-                <section className="mb-8 rounded border border-border bg-card p-6">
-                  <h2 className="mb-4 text-sm font-semibold">Your position</h2>
-                  <dl className="grid grid-cols-2 gap-x-6 gap-y-5 sm:grid-cols-3">
-                    <Figure
-                      label="Shares"
-                      value={formatShares(data.holder.shares)}
-                      note="spUSDC, 9 decimals"
-                    />
-                    <Figure label="Wallet USDC" value={usdc(data.holder.usdcBalance)} />
-                    <Figure
-                      label="Queued"
-                      value={usdc(data.holder.pendingAssets)}
-                      note={
-                        data.holder.pendingAssets > 0n
-                          ? `epoch ${data.holder.pendingEpoch}`
-                          : 'nothing pending'
-                      }
-                    />
-                  </dl>
-                </section>
+                <AnimatedContent delay={0.12}>
+                  <section className="rounded border border-border bg-card p-6">
+                    <h2 className="mb-4 text-sm font-semibold">Your position</h2>
+                    <dl className="grid grid-cols-2 gap-x-6 gap-y-5 sm:grid-cols-3">
+                      <Plain
+                        label="Shares"
+                        value={formatShares(data.holder.shares)}
+                        note="spUSDC · 9 dp"
+                      />
+                      <Figure label="Wallet" value={data.holder.usdcBalance} note="USDC · 6 dp" />
+                      <Figure
+                        label="Queued"
+                        value={data.holder.pendingAssets}
+                        note={
+                          data.holder.pendingAssets > 0n
+                            ? `epoch ${data.holder.pendingEpoch}`
+                            : 'nothing pending'
+                        }
+                      />
+                    </dl>
+                  </section>
+                </AnimatedContent>
 
-                <div className="space-y-4">
+                <AnimatedContent delay={0.18}>
                   <DepositCard data={data} address={address} onDone={reload} />
+                </AnimatedContent>
+                <AnimatedContent delay={0.24}>
                   <RequestCard data={data} address={address} onDone={reload} />
+                </AnimatedContent>
+                <AnimatedContent delay={0.3}>
                   <ClaimCard data={data} address={address} onDone={reload} />
-                </div>
+                </AnimatedContent>
               </>
             )}
-          </>
+          </div>
         )}
       </main>
 
       <footer className="mt-12 border-t border-border bg-muted/30">
         <div className="mx-auto max-w-4xl px-4 py-8 md:px-6 lg:px-8">
           <p className="max-w-2xl text-xs leading-relaxed text-muted-foreground">
-            Shares are ERC-4626 at nine decimals — six from USDC plus a three-place virtual-share
-            offset that blocks the first-depositor inflation attack. Arc&apos;s native gas token is
-            USDC at eighteen decimals over the same balance the vault reads at six.
+            Three scales meet here: USDC 6 dp, spUSDC shares 9 dp (ERC-4626 adds a 3-place
+            virtual-share offset), Arc gas 18 dp over the same balance. {usdc(1_000_000n)} is one
+            USDC.
           </p>
         </div>
       </footer>

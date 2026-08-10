@@ -121,6 +121,18 @@ export const VAULT_ABI = [
     outputs: [{ name: 'epoch', type: 'uint16' }, { name: 'lastSettledEpoch', type: 'uint16' }],
   },
   {
+    type: 'function', name: 'venues', stateMutability: 'view',
+    inputs: [{ name: 'venueId', type: 'uint16' }],
+    outputs: [
+      { name: 'deployedAssets', type: 'uint128' },
+      { name: 'lastRebalanceAt', type: 'uint64' },
+      { name: 'scoreBps', type: 'uint32' },
+      { name: 'venueId', type: 'uint16' },
+      { name: 'chainDomain', type: 'uint8' },
+      { name: 'flags', type: 'uint8' },
+    ],
+  },
+  {
     type: 'function', name: 'pendingOf', stateMutability: 'view',
     inputs: [{ name: 'holder', type: 'address' }],
     outputs: [

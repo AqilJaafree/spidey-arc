@@ -15,6 +15,7 @@ import { describe, expect, it } from 'vitest';
 import { createPublicClient, http } from 'viem';
 
 import { ARC_TESTNET, CONTRACTS, USDC_ABI, VAULT_ABI } from './chain';
+import { FLAG_ACTIVE, SPOKES } from './venues';
 
 const client = createPublicClient({
   chain: ARC_TESTNET,
@@ -105,6 +106,44 @@ describe('LPVault ABI', () => {
     // Redeeming every share cannot fetch more than the vault's equity.
     const total = await client.readContract({ ...vault, functionName: 'totalAssets' });
     expect(owed).toBeLessThanOrEqual(total);
+  });
+});
+
+describe('venue rows', () => {
+  it('decodes each spoke and agrees with the domain the diagram assumes', async () => {
+    const rows = await client.multicall({
+      allowFailure: false,
+      contracts: SPOKES.map((s) => ({
+        ...vault,
+        functionName: 'venues' as const,
+        args: [s.venueId] as const,
+      })),
+    });
+
+    rows.forEach((row, i) => {
+      expect(row).toHaveLength(6);
+      const [, , , venueId, chainDomain, flags] = row;
+      expect(venueId).toBe(SPOKES[i].venueId);
+      // A registered venue must sit on the domain the route diagram draws it
+      // on; a mismatch would label capital with the wrong chain.
+      if (flags & FLAG_ACTIVE) expect(chainDomain).toBe(SPOKES[i].cctpDomain);
+    });
+  });
+
+  it('never reports more deployed at the spokes than the vault marks in total', async () => {
+    const [rows, deployed] = await Promise.all([
+      client.multicall({
+        allowFailure: false,
+        contracts: SPOKES.map((s) => ({
+          ...vault,
+          functionName: 'venues' as const,
+          args: [s.venueId] as const,
+        })),
+      }),
+      client.readContract({ ...vault, functionName: 'deployedAssets' }),
+    ]);
+    const sum = rows.reduce((total, row) => total + row[0], 0n);
+    expect(sum).toBeLessThanOrEqual(deployed);
   });
 });
 

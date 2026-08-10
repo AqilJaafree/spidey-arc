@@ -157,8 +157,7 @@ export function DepositCard({ data, address, onDone }: Props) {
     <section className="rounded border border-border bg-card p-5">
       <h3 className="text-sm font-semibold">Deposit</h3>
       <p className="mt-1 text-xs text-muted-foreground">
-        You hold {fmtUsdc(holder.usdcBalance)} USDC. Arc pays gas in USDC too, so a deposit and its
-        fee come out of the same balance.
+        {fmtUsdc(holder.usdcBalance)} available. Arc pays gas in USDC too — same balance.
       </p>
 
       <div className="mt-4 flex flex-col gap-2 sm:flex-row">
@@ -214,9 +213,8 @@ export function RequestCard({ data, onDone }: Props) {
     <section className="rounded border border-border bg-card p-5">
       <h3 className="text-sm font-semibold">Request withdrawal</h3>
       <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-        You hold {formatShares(holder.shares)} spUSDC. Requesting burns them now and fixes your
-        payout at today&apos;s price — you stop earning at that moment and are insulated from later
-        moves. It becomes collectable once the operator settles epoch {data.vault.epoch}.
+        {formatShares(holder.shares)} spUSDC. Burns now, fixes your payout at today&apos;s price.
+        Collectable once the operator settles epoch {data.vault.epoch}.
       </p>
 
       <div className="mt-4 flex flex-col gap-2 sm:flex-row">
@@ -291,9 +289,8 @@ export function ClaimCard({ data, address, onDone }: Props) {
       {readiness.haircutBps > 0 && (
         <p className="mt-2 text-xs leading-relaxed text-warning">
           Coverage is {(10_000 - readiness.haircutBps) / 100}%, so this pays{' '}
-          {fmtUsdc(readiness.payout)} rather than the full {fmtUsdc(holder.pendingAssets)}. The
-          shortfall is shared across everyone in the queue instead of landing on whoever claims
-          last.
+          {fmtUsdc(readiness.payout)}, not {fmtUsdc(holder.pendingAssets)}. The shortfall is shared
+          across the queue rather than landing on whoever claims last.
         </p>
       )}
 

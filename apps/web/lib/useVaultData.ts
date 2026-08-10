@@ -6,12 +6,14 @@ import type { Address } from 'viem';
 import { CONTRACTS, USDC_ABI, VAULT_ABI } from './chain';
 import { publicClient } from './wallet';
 import type { HolderState, VaultState } from './vault';
+import { SPOKES, routeStates, type Route } from './venues';
 
 const vault = { address: CONTRACTS.vault as Address, abi: VAULT_ABI } as const;
 const usdc = { address: CONTRACTS.usdc as Address, abi: USDC_ABI } as const;
 
 export type VaultData = {
   vault: VaultState;
+  routes: Route[];
   holder: HolderState | null;
   /** Chain time, so age checks are judged against the chain rather than the browser. */
   now: bigint;
@@ -28,7 +30,10 @@ export type VaultData = {
  * worse, the reverse.
  */
 export async function readVault(holder: Address | null): Promise<VaultData> {
-  const [block, results] = await Promise.all([
+  // Two batches rather than one. Spreading the homogeneous venue reads into
+  // the heterogeneous batch collapses viem's per-element return typing to a
+  // single union, and these are still one round trip each through Multicall3.
+  const [block, results, venueRows] = await Promise.all([
     publicClient.getBlock(),
     publicClient.multicall({
       allowFailure: false,
@@ -42,9 +47,27 @@ export async function readVault(holder: Address | null): Promise<VaultData> {
         { ...vault, functionName: 'MAX_NAV_AGE' },
       ],
     }),
+    // Read by id rather than by walking `activeVenueBitmap`: an unregistered
+    // spoke is a state the diagram shows, not one it should hide.
+    publicClient.multicall({
+      allowFailure: false,
+      contracts: SPOKES.map((s) => ({
+        ...vault,
+        functionName: 'venues' as const,
+        args: [s.venueId] as const,
+      })),
+    }),
   ]);
 
   const [totalAssets, assets, nav, queue, caps, coverageBps, maxNavAge] = results;
+  const routes = routeStates(
+    venueRows.map((row, i) => ({
+      venueId: SPOKES[i].venueId,
+      deployed: row[0],
+      chainDomain: row[4],
+      flags: row[5],
+    })),
+  );
   const [idle, pending] = assets;
   const [deployed, navUpdatedAt] = nav;
   const [epoch, lastSettledEpoch] = queue;
@@ -64,7 +87,7 @@ export async function readVault(holder: Address | null): Promise<VaultData> {
   };
 
   if (!holder) {
-    return { vault: state, holder: null, now: block.timestamp, blockNumber: block.number };
+    return { vault: state, routes, holder: null, now: block.timestamp, blockNumber: block.number };
   }
 
   const [shares, usdcBalance, allowance, pendingOf] = await publicClient.multicall({
@@ -81,6 +104,7 @@ export async function readVault(holder: Address | null): Promise<VaultData> {
 
   return {
     vault: state,
+    routes,
     holder: { shares, usdcBalance, allowance, pendingAssets, pendingEpoch },
     now: block.timestamp,
     blockNumber: block.number,

@@ -96,7 +96,7 @@ Every one of those pools used to report the same 51% capture and the same zero e
 
 ```bash
 pnpm install
-pnpm test          # 549 TypeScript tests
+pnpm test          # 598 TypeScript tests
 pnpm api           # scoring engine on :8787
 pnpm web           # UI on :3000  —  / analysis, /vault deposit & withdraw
 
@@ -141,6 +141,8 @@ No off-chain party holds a key that can move user funds. The reporter posts scor
 Three decimal scales meet on that page and mixing them is the easiest way to put a wrong number on screen: **USDC 6, spUSDC shares 9** (ERC-4626 adds the 3-place virtual-share offset), **native gas 18**.
 
 Every action is simulated against the node before the wallet is asked to sign, and a refusal arrives as a sentence rather than a hex blob. That is the exclusion table's rule applied to transactions — name the reason, never approximate it — and it is not decorative: the queue genuinely refuses to pay out of a mark older than six hours, and the page says so instead of spending a transaction to find out.
+
+The route diagram animates the same way. A dash travels the Arc → Base or Arc → Solana path when, and only when, that venue carries `FLAG_PENDING_HOOK` — burned here, not yet minted there, claimable in neither place. If the line moves, capital is in flight; nothing animates on a timer. Motion primitives are React Bits, adapted down to what the brief allows and skipped entirely under `prefers-reduced-motion`.
 
 ## Arc → Base Sepolia, over CCTP
 
