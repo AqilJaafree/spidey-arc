@@ -181,3 +181,132 @@ export async function fetchObservedRanges(
     side,
   };
 }
+
+/**
+ * How long a range series is reused. Six hours, because these are *daily*
+ * candles.
+ *
+ * `poolCache.ts` holds pool state for 60s, which is right for a price and wrong
+ * by four orders of magnitude for a series that changes once a day. Refetching
+ * it every minute is what made GeckoTerminal answer 429 on the third call of a
+ * burst — the cadence was the defect, not the pool count, and rationing pools
+ * would have kept the wrong cadence while hiding it.
+ */
+export const DEFAULT_RANGE_TTL_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * How long a *failed* fetch is remembered. Ten minutes.
+ *
+ * Deliberately not the full TTL: a 429 is transient and recovers in minutes,
+ * while a refusal is structural — a pool of two volatile tokens will still be two
+ * volatile tokens this evening. Sharing one TTL would either re-hammer the thing
+ * that is rate-limiting us or write off a pool for the day over a blip.
+ */
+export const ERROR_BACKOFF_MS = 10 * 60 * 1000;
+
+type CacheEntry = {
+  at: number;
+  value: ObservedRanges | null;
+  /** `refused` keeps the long TTL; `error` gets the short backoff. */
+  kind: 'ok' | 'refused' | 'error';
+};
+
+export type RangeCache = {
+  entries: Map<string, CacheEntry>;
+  /** In-flight fetches, so concurrent callers share one upstream request. */
+  inflight: Map<string, Promise<ObservedRanges | null>>;
+};
+
+export const createRangeCache = (): RangeCache => ({ entries: new Map(), inflight: new Map() });
+
+/** Process-wide default, so separate adapter instances still share one budget. */
+const sharedCache = createRangeCache();
+
+export type CachedRangeOptions = {
+  cache?: RangeCache;
+  ttlMs?: number;
+  errorBackoffMs?: number;
+  /** Injected for determinism under test. */
+  now?: number;
+  /** Injected for test; production fetches through {@link fetchObservedRanges}. */
+  fetcher?: (network: string, pool: string) => Promise<ObservedRanges | null>;
+  /** Called with the reason when a fetch fails, so a caller can surface it. */
+  onError?: (reason: string) => void;
+  days?: number;
+  signal?: AbortSignal;
+};
+
+/**
+ * {@link fetchObservedRanges} behind a TTL, returning `null` rather than throwing.
+ *
+ * One code path for the caller: absent ranges leave the row's
+ * `daily24hRangesBps` undefined and `no-volatility-series` flags it honestly.
+ * The reason still escapes through `onError`, because "no history for this pair"
+ * and "we are being rate-limited" are different operational facts.
+ */
+export async function cachedObservedRanges(
+  network: string,
+  pool: string,
+  options: CachedRangeOptions = {},
+): Promise<ObservedRanges | null> {
+  const cache = options.cache ?? sharedCache;
+  const ttlMs = options.ttlMs ?? DEFAULT_RANGE_TTL_MS;
+  const backoffMs = options.errorBackoffMs ?? ERROR_BACKOFF_MS;
+  const now = options.now ?? Date.now();
+  const key = `${network}/${pool}`;
+
+  const hit = cache.entries.get(key);
+  if (hit !== undefined) {
+    const age = now - hit.at;
+    if (age < (hit.kind === 'error' ? backoffMs : ttlMs)) return hit.value;
+  }
+
+  const pending = cache.inflight.get(key);
+  if (pending !== undefined) return pending;
+
+  const fetcher =
+    options.fetcher ??
+    ((n: string, p: string) =>
+      fetchObservedRanges(n, p, {
+        ...(options.days !== undefined ? { days: options.days } : {}),
+        ...(options.signal ? { signal: options.signal } : {}),
+      }));
+
+  const run = fetcher(network, pool)
+    .then((value) => {
+      cache.entries.set(key, { at: now, value, kind: value === null ? 'refused' : 'ok' });
+      return value;
+    })
+    .catch((error: unknown) => {
+      const reason = error instanceof Error ? error.message : String(error);
+      options.onError?.(reason);
+      cache.entries.set(key, { at: now, value: null, kind: 'error' });
+      return null;
+    })
+    .finally(() => {
+      cache.inflight.delete(key);
+    });
+
+  cache.inflight.set(key, run);
+  return run;
+}
+
+/**
+ * Whether a pool's ranges are already cached and still fresh.
+ *
+ * Lets a caller spend a bounded number of *upstream* fetches per scan while
+ * serving unlimited cache hits — so a cold start fills in over a few refreshes
+ * instead of arriving as one 24-call burst, which is the shape that got us
+ * rate-limited in the first place.
+ */
+export function hasFreshRange(
+  network: string,
+  pool: string,
+  options: { cache?: RangeCache; ttlMs?: number; errorBackoffMs?: number; now?: number } = {},
+): boolean {
+  const cache = options.cache ?? sharedCache;
+  const hit = cache.entries.get(`${network}/${pool}`);
+  if (hit === undefined) return false;
+  const age = (options.now ?? Date.now()) - hit.at;
+  return age < (hit.kind === 'error' ? (options.errorBackoffMs ?? ERROR_BACKOFF_MS) : (options.ttlMs ?? DEFAULT_RANGE_TTL_MS));
+}

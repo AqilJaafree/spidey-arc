@@ -37,7 +37,8 @@ import {
 } from 'viem';
 import { arbitrum, base, mainnet, optimism } from 'viem/chains';
 import { fetchLlamaPools, filterLlamaPools, parseFeeTier, splitSymbol, type LlamaPool } from './defillama.js';
-import { modelledPriceHistogram } from './series.js';
+import { medianOf, modelledPriceHistogram } from './series.js';
+import { cachedObservedRanges, hasFreshRange } from './geckoterminal.js';
 import { isUsdSymbol, type AdapterContext, type AdapterResult, type VenueAdapter } from './types.js';
 
 const V3_FACTORY_ABI = parseAbi([
@@ -61,6 +62,12 @@ const ERC20_ABI = parseAbi([
 const CANONICAL_V3_FACTORY = '0x1F98431c8aD98523631AE4a59f267346ea31F984' as Address;
 
 type ChainConfig = {
+  /**
+   * GeckoTerminal's network slug, for the daily price ranges. Omitted where it
+   * has not been verified against their API — an absent slug means the chain's
+   * rows keep `no-volatility-series` rather than being handed a guess.
+   */
+  gtNetwork?: string;
   llamaName: string;
   chain: string;
   cctpDomain: number;
@@ -78,6 +85,8 @@ type ChainConfig = {
 export const UNISWAP_CHAINS: Record<string, ChainConfig> = {
   base: {
     llamaName: 'Base',
+    // Verified live: pools resolve and OHLCV returns real high/low.
+    gtNetwork: 'base',
     chain: 'base',
     cctpDomain: 6,
     viemChain: base,
@@ -223,6 +232,11 @@ export type UniswapOptions = AdapterContext & {
   minVolume24hUsd?: number;
   /** Cap on RPC round-trips; public endpoints are rate-limited. */
   maxPools?: number;
+  /**
+   * Upstream range fetches per scan. Cache hits are free and unlimited; this
+   * bounds only cold pools. 0 disables the range fetch entirely.
+   */
+  maxRangeFetches?: number;
 };
 
 export function createUniswapV3Adapter(options: UniswapOptions = {}): VenueAdapter {
@@ -353,7 +367,16 @@ export function createUniswapV3Adapter(options: UniswapOptions = {}): VenueAdapt
         }
       }
 
-      return { pools, skipped };
+      const degraded: Array<{ poolId: string; reason: string }> = [];
+      const withRanges = await attachObservedRanges(pools, {
+        networkFor: (chain) =>
+          Object.values(UNISWAP_CHAINS).find((c) => c.chain === chain)?.gtNetwork,
+        budget: merged.maxRangeFetches ?? DEFAULT_RANGE_FETCHES_PER_SCAN,
+        onDegraded: (d) => degraded.push(d),
+        ...(ctx.signal ? { signal: ctx.signal } : {}),
+      });
+
+      return { pools: withRanges, skipped, degraded };
     },
   };
 }
@@ -369,6 +392,83 @@ export function createUniswapV3Adapter(options: UniswapOptions = {}): VenueAdapt
 function modelledFromSigma(volume24hUsd: number, sigma: number | null) {
   const rangeBps = sigma && Number.isFinite(sigma) && sigma > 0 ? Math.min(sigma * 10_000, 500) : 100;
   return modelledPriceHistogram(volume24hUsd, rangeBps);
+}
+
+
+/**
+ * How many *upstream* range fetches one scan may spend.
+ *
+ * Cache hits are unlimited and free, so this bounds only cold pools. Three per
+ * scan against a 6h TTL means a cold start fills in over a few refreshes rather
+ * than arriving as one 24-call burst — which is the shape that made
+ * GeckoTerminal answer 429 on the third request. Coverage converges; the budget
+ * only decides how fast.
+ */
+export const DEFAULT_RANGE_FETCHES_PER_SCAN = 3;
+
+/**
+ * Attach observed daily ranges, and re-band the volume histogram on them.
+ *
+ * Two gaps close at once. `estimateExitProbability` only runs on
+ * `daily24hRangesBps`, which this adapter never supplied, so `p_exit` was 0 for
+ * every row — the most flattering value available, and exactly what
+ * `no-volatility-series` was added to expose. And `modelledFromSigma` banded the
+ * volume histogram on DefiLlama's σ, whose own comment concedes it is "a 30-day
+ * volatility of the pool's APY series, not of its price". An observed band
+ * replaces a quantity that was never the right one.
+ *
+ * A pool without ranges is left exactly as it was: the flag reports it, and
+ * nothing here substitutes a number to fill the hole.
+ */
+async function attachObservedRanges(
+  pools: NormalizedPool[],
+  options: {
+    networkFor: (chain: string) => string | undefined;
+    budget: number;
+    onDegraded?: (d: { poolId: string; reason: string }) => void;
+    signal?: AbortSignal;
+  },
+): Promise<NormalizedPool[]> {
+  let budget = options.budget;
+  const out: NormalizedPool[] = [];
+
+  // Sequential on purpose. The point is to avoid bursts, and `Promise.all` over
+  // cold pools would reissue exactly the burst the budget exists to prevent.
+  for (const pool of pools) {
+    const network = options.networkFor(pool.chain);
+    if (network === undefined) {
+      out.push(pool);
+      continue;
+    }
+    const warm = hasFreshRange(network, pool.poolId);
+    if (!warm && budget <= 0) {
+      out.push(pool);
+      continue;
+    }
+    if (!warm) budget -= 1;
+
+    const ranges = await cachedObservedRanges(network, pool.poolId, {
+      ...(options.signal ? { signal: options.signal } : {}),
+      onError: (reason) =>
+        options.onDegraded?.({ poolId: pool.poolId, reason: `daily ranges unavailable: ${reason}` }),
+    });
+    if (ranges === null) {
+      out.push(pool);
+      continue;
+    }
+
+    out.push({
+      ...pool,
+      daily24hRangesBps: ranges.daily24hRangesBps,
+      // Observed band, still a uniform distribution within it — so the label
+      // stays `modelled-uniform-over-range`. Only the width was measured.
+      priceHistogram: modelledPriceHistogram(
+        pool.volume24h,
+        ranges.bandBps > 0 ? ranges.bandBps : (medianOf(ranges.daily24hRangesBps) ?? 100),
+      ),
+    });
+  }
+  return out;
 }
 
 export const uniswapV3Adapter = createUniswapV3Adapter();

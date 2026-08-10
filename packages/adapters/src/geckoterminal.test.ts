@@ -64,3 +64,126 @@ describe('urls', () => {
     expect(ohlcvUrl('base', POOL, 'base', 7)).toMatch(/token=base$/);
   });
 });
+
+import {
+  cachedObservedRanges,
+  createRangeCache,
+  DEFAULT_RANGE_TTL_MS,
+  ERROR_BACKOFF_MS,
+  type ObservedRanges,
+} from './geckoterminal.js';
+
+const RANGES: ObservedRanges = { daily24hRangesBps: [168, 200], bandBps: 470, side: 'quote' };
+const T0 = 1_786_000_000_000;
+
+describe('daily candles get a daily-cadence cache', () => {
+  /**
+   * `PoolCache` holds pool state for 60s, which is right for a price and wrong by
+   * four orders of magnitude for a series of *daily* candles. Refetching those
+   * every minute is what made GeckoTerminal 429 on the third call of a burst; the
+   * fix is the cadence, not a smaller pool cap.
+   */
+  it('fetches once and serves the rest of the TTL from memory', async () => {
+    let calls = 0;
+    const cache = createRangeCache();
+    const fetcher = async () => {
+      calls += 1;
+      return RANGES;
+    };
+    const opts = { cache, fetcher, now: T0 };
+    expect(await cachedObservedRanges('base', 'P', opts)).toEqual(RANGES);
+    expect(await cachedObservedRanges('base', 'P', { ...opts, now: T0 + 60_000 })).toEqual(RANGES);
+    expect(await cachedObservedRanges('base', 'P', { ...opts, now: T0 + DEFAULT_RANGE_TTL_MS - 1 })).toEqual(RANGES);
+    expect(calls).toBe(1);
+  });
+
+  it('refetches once the TTL has passed', async () => {
+    let calls = 0;
+    const cache = createRangeCache();
+    const fetcher = async () => {
+      calls += 1;
+      return RANGES;
+    };
+    await cachedObservedRanges('base', 'P', { cache, fetcher, now: T0 });
+    await cachedObservedRanges('base', 'P', { cache, fetcher, now: T0 + DEFAULT_RANGE_TTL_MS });
+    expect(calls).toBe(2);
+  });
+
+  it('keys by pool, not globally', async () => {
+    let calls = 0;
+    const cache = createRangeCache();
+    const fetcher = async () => {
+      calls += 1;
+      return RANGES;
+    };
+    await cachedObservedRanges('base', 'A', { cache, fetcher, now: T0 });
+    await cachedObservedRanges('base', 'B', { cache, fetcher, now: T0 });
+    expect(calls).toBe(2);
+  });
+
+  it('caches a structural refusal for the full TTL', async () => {
+    // A pool of two volatile tokens will still be two volatile tokens in an hour.
+    // Retrying it every refresh spends the budget that the pools which *can* be
+    // answered need.
+    let calls = 0;
+    const cache = createRangeCache();
+    const fetcher = async () => {
+      calls += 1;
+      return null;
+    };
+    expect(await cachedObservedRanges('base', 'P', { cache, fetcher, now: T0 })).toBeNull();
+    expect(await cachedObservedRanges('base', 'P', { cache, fetcher, now: T0 + 3_600_000 })).toBeNull();
+    expect(calls).toBe(1);
+  });
+
+  it('retries a thrown error after a short backoff, not the full TTL', async () => {
+    // A 429 is transient and a refusal is not, so they must not share a TTL:
+    // one should recover in minutes, the other should not be asked again today.
+    let calls = 0;
+    const cache = createRangeCache();
+    const fetcher = async () => {
+      calls += 1;
+      throw new Error('429 Too Many Requests');
+    };
+    expect(await cachedObservedRanges('base', 'P', { cache, fetcher, now: T0 })).toBeNull();
+    await cachedObservedRanges('base', 'P', { cache, fetcher, now: T0 + ERROR_BACKOFF_MS - 1 });
+    expect(calls).toBe(1);
+    await cachedObservedRanges('base', 'P', { cache, fetcher, now: T0 + ERROR_BACKOFF_MS });
+    expect(calls).toBe(2);
+  });
+
+  it('reports the error rather than throwing it at the caller', async () => {
+    const seen: string[] = [];
+    const cache = createRangeCache();
+    await cachedObservedRanges('base', 'P', {
+      cache,
+      now: T0,
+      fetcher: async () => {
+        throw new Error('429 Too Many Requests');
+      },
+      onError: (reason) => seen.push(reason),
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatch(/429/);
+  });
+
+  it('collapses concurrent callers into one fetch', async () => {
+    // The whole point is fewer upstream calls; two rows asking at once must not
+    // double them.
+    let calls = 0;
+    const cache = createRangeCache();
+    const fetcher = async () => {
+      calls += 1;
+      await new Promise((r) => setTimeout(r, 5));
+      return RANGES;
+    };
+    const opts = { cache, fetcher, now: T0 };
+    const [a, b] = await Promise.all([
+      cachedObservedRanges('base', 'P', opts),
+      cachedObservedRanges('base', 'P', opts),
+    ]);
+    expect(a).toEqual(RANGES);
+    expect(b).toEqual(RANGES);
+    expect(calls).toBe(1);
+  });
+});
