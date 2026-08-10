@@ -10,7 +10,7 @@ import { AnimatedContent } from '@/components/motion/AnimatedContent';
 import { CountUp } from '@/components/motion/CountUp';
 import { ARC_TESTNET, CONTRACTS, explorerAddress } from '@/lib/chain';
 import { useVaultData } from '@/lib/useVaultData';
-import { formatShares, humanDuration, usdc } from '@/lib/vault';
+import { formatShares, humanDuration } from '@/lib/vault';
 import { useWallet } from '@/lib/wallet';
 
 const money = (n: number) =>
@@ -59,8 +59,7 @@ export default function VaultPage() {
           </h1>
           <p className="text-base leading-relaxed text-muted-foreground">
             ERC-4626 over USDC. Exits go through a queue — capital in a position on another chain
-            cannot come back in the same transaction. Every action is simulated before your wallet
-            signs, so refusals arrive as sentences.
+            cannot come back in the same transaction.
           </p>
           <p className="text-xs text-muted-foreground">
             chain {ARC_TESTNET.id} ·{' '}
@@ -130,9 +129,9 @@ export default function VaultPage() {
 
                 {navExpired && data.vault.deployed > 0n && (
                   <p className="mt-5 border-t border-border pt-4 text-xs leading-relaxed text-warning">
-                    The mark is past its {humanDuration(data.vault.maxNavAge)} bound. Harmless while
-                    idle covers the queue; a larger claim will be refused rather than paid at par. A
-                    NAV report clears it.
+                    The mark is past its {humanDuration(data.vault.maxNavAge)} bound. Harmless
+                    while idle covers the queue; a larger claim will be refused. A NAV report
+                    clears it.
                   </p>
                 )}
               </section>
@@ -199,15 +198,6 @@ export default function VaultPage() {
         )}
       </main>
 
-      <footer className="mt-12 border-t border-border bg-muted/30">
-        <div className="mx-auto max-w-4xl px-4 py-8 md:px-6 lg:px-8">
-          <p className="max-w-2xl text-xs leading-relaxed text-muted-foreground">
-            Three scales meet here: USDC 6 dp, spUSDC shares 9 dp (ERC-4626 adds a 3-place
-            virtual-share offset), Arc gas 18 dp over the same balance. {usdc(1_000_000n)} is one
-            USDC.
-          </p>
-        </div>
-      </footer>
     </>
   );
 }

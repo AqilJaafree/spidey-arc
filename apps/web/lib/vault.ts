@@ -175,7 +175,7 @@ export function depositReadiness(
       reason: {
         code: 'ZeroAmount',
         title: 'Enter an amount',
-        detail: 'A deposit of nothing mints no shares, and the vault rejects it.',
+        detail: 'A deposit of nothing mints no shares.',
       },
     };
   }
@@ -203,9 +203,7 @@ export function depositReadiness(
       reason: {
         code: 'DepositCapExceeded',
         title: 'Over the deposit cap',
-        detail:
-          `Cap ${usdc(vault.depositCap)}, held ${usdc(vault.totalAssets)} — room for ` +
-          `${usdc(headroom)}. The cap stops the vault becoming the dilution problem it detects.`,
+        detail: `Cap ${usdc(vault.depositCap)}, held ${usdc(vault.totalAssets)} — room for ${usdc(headroom)}.`,
       },
     };
   }
@@ -228,7 +226,7 @@ export function requestReadiness(
       reason: {
         code: 'ZeroShares',
         title: 'Enter an amount',
-        detail: 'Requesting zero shares would burn nothing and queue nothing.',
+        detail: 'Zero shares burns nothing and queues nothing.',
       },
     };
   }
@@ -254,9 +252,8 @@ export function requestReadiness(
         code: 'ClaimPendingFirst',
         title: 'Claim your settled withdrawal first',
         detail:
-          `You have ${usdc(holder.pendingAssets)} waiting from epoch ${holder.pendingEpoch}, and ` +
-          `the vault is now on epoch ${vault.epoch}. A holder has one outstanding request at a ` +
-          `time, so that one has to be collected before another is made.`,
+          `${usdc(holder.pendingAssets)} is waiting from epoch ${holder.pendingEpoch}; the vault ` +
+          `is on epoch ${vault.epoch}. One outstanding request at a time.`,
       },
     };
   }
@@ -312,8 +309,7 @@ export function claimReadiness(
         code: 'EpochNotSettled',
         title: `Epoch ${holder.pendingEpoch} is still open`,
         detail:
-          `Exits are asynchronous by design. The operator closes the epoch once the capital ` +
-          `backing it is back on Arc; the claim is collectable then.`,
+          `The operator closes the epoch once the capital backing it is back on Arc.`,
       },
     };
   }
@@ -334,10 +330,9 @@ export function claimReadiness(
             code: 'NavStale',
             title: 'The mark is too old to pay against',
             detail:
-              `Idle falls short of the queue, so coverage depends on the mark — and it is ` +
+              `Idle falls short of the queue, so coverage rests on the mark — and it is ` +
               `${humanDuration(age)} old, past the ${humanDuration(vault.maxNavAge)} bound. ` +
-              `Paying at par out of an unrefreshed number would hand an unmarked loss to ` +
-              `whoever claims last. A NAV report clears it.`,
+              `A NAV report clears it.`,
           },
         };
       }
@@ -359,8 +354,7 @@ export function claimReadiness(
         title: 'The vault cannot cover this yet',
         detail:
           `${usdc(payout)} against ${usdc(vault.idle)} idle. Book value at a venue counts toward ` +
-          `coverage, so no haircut applies — but only cash pays a claim. Either the capital ` +
-          `returns, or the residual is written off so the haircut can work.`,
+          `coverage, but only cash pays a claim.`,
       },
     };
   }
@@ -376,9 +370,8 @@ const REFUSALS: Record<string, (args: readonly unknown[]) => Omit<Refusal, 'code
   SynchronousRedemptionDisabled: () => ({
     title: 'Instant withdrawal is disabled',
     detail:
-      'Capital sitting in a position on another chain cannot be redeemed in the same ' +
-      'transaction. Rather than pretend otherwise, the vault routes every exit through ' +
-      'request and claim.',
+      'Capital in a position on another chain cannot be redeemed in the same transaction. ' +
+      'Every exit goes through request and claim.',
   }),
   DepositCapExceeded: (args) => ({
     title: 'Over the deposit cap',
@@ -409,9 +402,7 @@ const REFUSALS: Record<string, (args: readonly unknown[]) => Omit<Refusal, 'code
   NavStale: (args) => ({
     title: 'The mark is too old to pay against',
     detail:
-      `Deployed capital was last marked ${humanDuration(BigInt(args[1] as bigint))} ago at most, ` +
-      'and the vault refuses to pay a shortfall out of a number nobody has refreshed. A fresh ' +
-      'NAV report clears it.',
+      `The mark may be up to ${humanDuration(BigInt(args[1] as bigint))} old. A NAV report clears it.`,
   }),
   InsufficientIdle: (args) => ({
     title: 'The vault cannot cover this yet',
@@ -448,9 +439,7 @@ export function explainRefusal(name: string, args: readonly unknown[]): Refusal 
     return {
       code: name,
       title: `The vault refused: ${name}`,
-      detail:
-        'This refusal has no plain-language mapping yet. The name is the contract error ' +
-        'verbatim, so it can be looked up in the source.',
+      detail: 'No plain-language mapping yet. The name is the contract error verbatim.',
     };
   }
   return { code: name, ...build(args) };

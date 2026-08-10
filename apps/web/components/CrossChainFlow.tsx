@@ -110,8 +110,7 @@ export function CrossChainFlow({ routes, hubAssets }: { routes: Route[]; hubAsse
 
       {routes.some((r) => r.status === 'inFlight') && (
         <p className="mt-4 border-t border-border pt-4 text-xs leading-relaxed text-warning">
-          Capital is burned on Arc and not yet minted at the destination — claimable in neither
-          place. The vault still books it as deployed, and the flag is what says otherwise.
+          Burned on Arc, not yet minted at the destination — claimable in neither place.
         </p>
       )}
     </figure>
