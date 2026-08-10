@@ -32,27 +32,27 @@ The dashboard divides by 222x more money than is actually working.
 
 ## Deployed contracts
 
-Deployer `0x9e5fdE1f7484096A9beCDBb956A05834eC581195`, owner/keeper/reporter throughout.
+Deployer [`0x9e5fdE1f7484096A9beCDBb956A05834eC581195`](https://testnet.arcscan.app/address/0x9e5fdE1f7484096A9beCDBb956A05834eC581195), owner/keeper/reporter throughout.
 
 ### Arc testnet — chain 5042002 · [explorer](https://testnet.arcscan.app)
 
 | Contract | Address |
 |---|---|
-| `LPVault` | `0x93Cd367f8ABEF789e8F6Bb1ce79eB0AB0153122f` |
-| `ScoreOracle` | `0xb7DB9Ee5Ee46EB608d9a3A4DCc843230dD63b621` |
-| `Router` | `0x09Bb87E6Ca168D6eD85e0682A39b22431600c9A8` |
-| `CctpBridgeExecutor` (venue 2) | `0x9eE4C1FFe609a4848053fD76071abBe69A63DB1c` |
-| USDC (ERC-20 shim) | `0x3600000000000000000000000000000000000000` |
+| `LPVault` | [`0x93Cd367f8ABEF789e8F6Bb1ce79eB0AB0153122f`](https://testnet.arcscan.app/address/0x93Cd367f8ABEF789e8F6Bb1ce79eB0AB0153122f) |
+| `ScoreOracle` | [`0xb7DB9Ee5Ee46EB608d9a3A4DCc843230dD63b621`](https://testnet.arcscan.app/address/0xb7DB9Ee5Ee46EB608d9a3A4DCc843230dD63b621) |
+| `Router` | [`0x09Bb87E6Ca168D6eD85e0682A39b22431600c9A8`](https://testnet.arcscan.app/address/0x09Bb87E6Ca168D6eD85e0682A39b22431600c9A8) |
+| `CctpBridgeExecutor` (venue 2) | [`0x9eE4C1FFe609a4848053fD76071abBe69A63DB1c`](https://testnet.arcscan.app/address/0x9eE4C1FFe609a4848053fD76071abBe69A63DB1c) |
+| USDC (ERC-20 shim) | [`0x3600000000000000000000000000000000000000`](https://testnet.arcscan.app/address/0x3600000000000000000000000000000000000000) |
 
 ### Base Sepolia — chain 84532
 
 | Contract | Address |
 |---|---|
-| `LPVault` | `0x93Cd367f8ABEF789e8F6Bb1ce79eB0AB0153122f` |
-| `ScoreOracle` | `0xb7DB9Ee5Ee46EB608d9a3A4DCc843230dD63b621` |
-| `Router` | `0x09Bb87E6Ca168D6eD85e0682A39b22431600c9A8` |
-| `UniV3Executor` (venue 1) | `0xcFb9E14567F37410857798F983c398612497cDe2` |
-| **`CctpReturnRelay`** | `0x280aD956FFFd3ABba3db59397BE7c4d4d04D32D4` |
+| `LPVault` | [`0x93Cd367f8ABEF789e8F6Bb1ce79eB0AB0153122f`](https://sepolia.basescan.org/address/0x93Cd367f8ABEF789e8F6Bb1ce79eB0AB0153122f) |
+| `ScoreOracle` | [`0xb7DB9Ee5Ee46EB608d9a3A4DCc843230dD63b621`](https://sepolia.basescan.org/address/0xb7DB9Ee5Ee46EB608d9a3A4DCc843230dD63b621) |
+| `Router` | [`0x09Bb87E6Ca168D6eD85e0682A39b22431600c9A8`](https://sepolia.basescan.org/address/0x09Bb87E6Ca168D6eD85e0682A39b22431600c9A8) |
+| `UniV3Executor` (venue 1) | [`0xcFb9E14567F37410857798F983c398612497cDe2`](https://sepolia.basescan.org/address/0xcFb9E14567F37410857798F983c398612497cDe2) |
+| **`CctpReturnRelay`** | [`0x280aD956FFFd3ABba3db59397BE7c4d4d04D32D4`](https://sepolia.basescan.org/address/0x280aD956FFFd3ABba3db59397BE7c4d4d04D32D4) |
 
 The Base `LPVault`/`ScoreOracle`/`Router` share their Arc addresses — deterministic `CREATE` from the same deployer at the same nonces on a fresh account on each chain. They are separate contracts on separate chains.
 
@@ -60,7 +60,7 @@ The Base `LPVault`/`ScoreOracle`/`Router` share their Arc addresses — determin
 
 | Program | Address |
 |---|---|
-| `MeteoraReceiver` | `FLfdxZbnkMFCRAgGDTkMzZn3i2X2EKZhYBep6seHjqNp` |
+| `MeteoraReceiver` | [`FLfdxZbnkMFCRAgGDTkMzZn3i2X2EKZhYBep6seHjqNp`](https://explorer.solana.com/address/FLfdxZbnkMFCRAgGDTkMzZn3i2X2EKZhYBep6seHjqNp?cluster=devnet) |
 
 Redeployed 2026-08-07 with the live DLMM CPI, and again the same day with the exit (`withdraw_position`); upgrade authority `8sHRx1C6…`. The prior id (`FnQGhy6u…`) was deployed under an authority we don't hold, so it could be neither upgraded nor closed.
 
