@@ -84,6 +84,19 @@
      text stays 16.3:1+ at every point along it. Not yet applied to any
      element — available as `bg-brand-bg` if a hero surface earns it. */
   --gradient-bg: linear-gradient(135deg, oklch(0.98 0.01 150) 0%, oklch(0.95 0.015 165) 100%);
+
+  /*
+   * Chart series — categorical slots 1-4 from the data-viz reference palette,
+   * NOT the brand ramp. Identity is the job here, and a green-family scale
+   * cannot separate four venues for a colourblind reader. Validated against
+   * this mode's card surface (#ffffff): worst adjacent CVD deltaE 9.1,
+   * normal-vision 22.9. Aqua and yellow sit under 3:1 on white, which the
+   * chart answers with mandatory direct labels and a table view.
+   */
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
 }
 
 .dark {
@@ -112,6 +125,16 @@
   --success-foreground: var(--primary-foreground);
   --ring: var(--primary);
   --gradient-bg: linear-gradient(135deg, oklch(0.13 0.015 150) 0%, oklch(0.16 0.02 165) 100%);
+
+  /*
+   * The same four hues re-stepped for the dark card (#0b140d) — a selected
+   * dark palette, not an automatic flip. Worst adjacent CVD deltaE 8.4,
+   * normal-vision 19.8, all four clear 3:1 on this surface.
+   */
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
 }
 
 :root {

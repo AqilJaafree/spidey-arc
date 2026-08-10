@@ -17,7 +17,7 @@ const mono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: 'USDC LP Vault — what you actually earn',
+  title: 'Spidey — what you actually earn',
   description:
     'Dilution- and cost-aware scoring for USDC LP venues across chains. Ranking is a function of your position size.',
 };

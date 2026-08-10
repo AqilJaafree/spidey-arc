@@ -1,4 +1,4 @@
-# USDC LP Vault — cross-chain yield router
+# Spidey — cross-chain USDC LP yield router
 
 Aggregators rank USDC LP venues on fees over *displayed* TVL. Only in-range liquidity earns fees, and your own deposit changes the denominator — so **the best pool is a function of how much you deposit**, and no dashboard asks you for that.
 

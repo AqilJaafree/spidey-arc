@@ -97,3 +97,33 @@ export function relativeTime(iso: string | null | undefined): string {
   if (seconds < 3600) return `${Math.round(seconds / 60)}m ago`;
   return `${Math.round(seconds / 3600)}h ago`;
 }
+
+/**
+ * A venue id as a person would say it.
+ *
+ * The engine emits registry slugs (`orca-whirlpool`, `meteora-dlmm`), which are
+ * right for a key and wrong on a chart label, where every character competes
+ * for width against the plot itself. Unknown slugs fall back to title-cased
+ * words rather than to a guess, so a newly added venue is merely unpolished
+ * instead of missing.
+ */
+const DEX_NAMES: Record<string, string> = {
+  'orca-whirlpool': 'Orca',
+  'orca-dex': 'Orca',
+  'meteora-dlmm': 'Meteora',
+  'uniswap-v3': 'Uniswap v3',
+  'uniswap-v4': 'Uniswap v4',
+  'raydium-clmm': 'Raydium',
+  'raydium-amm': 'Raydium',
+  'pancakeswap-amm-v3': 'PancakeSwap',
+  'curve-dex': 'Curve',
+};
+
+export function dexName(dex: string): string {
+  const known = DEX_NAMES[dex];
+  if (known) return known;
+  return dex
+    .split('-')
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+}

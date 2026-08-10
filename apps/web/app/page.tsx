@@ -6,8 +6,11 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { AlertCircle, Inbox, RefreshCw } from 'lucide-react';
 import { fetchCompare, type CompareResponse } from '@/lib/api';
 import { engineIsLocal } from '@/lib/apiTarget';
-import { aprFromBps, gapInPoints, gapTone, relativeTime, usdFull } from '@/lib/format';
+import { aprFromBps, dexName, gapInPoints, gapTone, relativeTime, usdFull } from '@/lib/format';
 import { ExcludedGroups } from '@/components/ExcludedGroups';
+import { DilutionChart } from '@/components/DilutionChart';
+import { HowItWorks } from '@/components/HowItWorks';
+import { Logo } from '@/components/Logo';
 import { PoolTable, PoolTableSkeleton } from '@/components/PoolTable';
 import { SizeControls } from '@/components/SizeControls';
 import { SiteHeader } from '@/components/SiteHeader';
@@ -75,6 +78,23 @@ function PageContent() {
     };
   }, [data]);
 
+  // Only rows carrying a real in-range denominator can be curved. Excluded
+  // pools stay excluded here too — an approximated denominator would be worse
+  // on a chart than in a table, because a drawn line reads as a measurement.
+  const curvable = useMemo(
+    () =>
+      ranked
+        .filter((r) => r.activeTvlUsd !== null && r.yourAprBps !== null)
+        .map((r) => ({
+          poolId: r.poolId,
+          label: `${r.pair.join('/')} \u00b7 ${dexName(r.dex)}`,
+          activeTvlUsd: r.activeTvlUsd,
+          yourAprBps: r.yourAprBps,
+          atSizeUsd: sizeUsd,
+        })),
+    [ranked, sizeUsd],
+  );
+
   const headlineBest = useMemo(() => {
     const rows = data?.rows ?? [];
     return rows.reduce<(typeof rows)[number] | null>(
@@ -94,6 +114,10 @@ function PageContent() {
 
       <main className="mx-auto max-w-7xl px-4 py-10 md:px-6 lg:px-8">
         <section className="mb-10 max-w-3xl space-y-3">
+          <div className="flex items-center gap-3">
+            <Logo size={40} />
+            <p className="text-sm font-semibold tracking-tight">Spidey</p>
+          </div>
           <h1 className="text-4xl leading-tight font-semibold tracking-tight text-balance md:text-5xl">
             What you actually earn
           </h1>
@@ -188,10 +212,10 @@ function PageContent() {
               )}
 
             <a
-              href="#formula"
+              href="#how-it-works"
               className="mt-4 inline-flex min-h-11 items-center text-xs text-muted-foreground underline decoration-border underline-offset-4 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background focus-visible:outline-none"
             >
-              How this is calculated ↓
+              How this works ↓
             </a>
           </section>
         )}
@@ -270,6 +294,17 @@ function PageContent() {
           )}
         </section>
 
+        {curvable.length >= 2 && (
+          <section aria-labelledby="curve-heading" className="mt-10 space-y-3">
+            <h2 id="curve-heading" className="text-lg font-medium">
+              The same venues, across sizes
+            </h2>
+            <DilutionChart pools={curvable} atSizeUsd={sizeUsd} />
+          </section>
+        )}
+
+        <HowItWorks />
+
         {excluded.length > 0 && (
           <section aria-labelledby="excluded-heading" className="mt-10 space-y-3">
             <div className="space-y-1">
@@ -287,15 +322,10 @@ function PageContent() {
         )}
       </main>
 
-      <footer id="formula" className="mt-12 scroll-mt-20 border-t border-border bg-muted/30">
-        <div className="mx-auto max-w-7xl space-y-2 px-4 py-8 md:px-6 lg:px-8">
-          <p className="text-xs font-semibold">Formula</p>
-          <p className="max-w-2xl text-xs leading-relaxed text-muted-foreground">
-            Your APR is <span className="tabular">365 · f · V_δ / (T_δ + A)</span> — fee rate times
-            in-range volume, over in-range liquidity plus your deposit. Venue widths differ, so
-            yields are also restated at a common ±0.1% for quality comparison.
-          </p>
-          <p className="pt-2 text-xs text-muted-foreground">USDC LP Vault</p>
+      <footer className="mt-12 border-t border-border bg-muted/30">
+        <div className="mx-auto flex max-w-7xl items-center gap-2 px-4 py-8 md:px-6 lg:px-8">
+          <Logo size={18} />
+          <p className="text-xs text-muted-foreground">Spidey · USDC LP Vault</p>
         </div>
       </footer>
     </>

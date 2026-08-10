@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 
 import { ConnectWallet } from './ConnectWallet';
+import { Logo } from './Logo';
 import { ThemeToggle } from './ThemeToggle';
 
 const LINKS = [
@@ -18,9 +19,10 @@ export function SiteHeader() {
     <header className="sticky top-0 z-30 border-b border-border bg-background/95 backdrop-blur">
       <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-3 md:px-6 lg:px-8">
         <div className="flex items-center gap-5">
-          <p className="hidden text-xs font-medium tracking-[0.08em] text-muted-foreground uppercase sm:block">
-            USDC LP Vault
-          </p>
+          <Link href="/" className="flex items-center gap-2 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
+            <Logo size={24} />
+            <span className="text-sm font-semibold tracking-tight">Spidey</span>
+          </Link>
           <nav className="flex items-center gap-1" aria-label="Sections">
             {LINKS.map((link) => {
               const active = pathname === link.href;
