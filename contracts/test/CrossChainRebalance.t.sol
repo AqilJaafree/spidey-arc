@@ -172,7 +172,7 @@ contract CrossChainRebalanceTest is Fixtures {
         usdc.mint(address(vault), 10_000 * USDC_ONE);
 
         vm.prank(keeper);
-        uint256 booked = router.recordBridgeArrival(VENUE_B, 10_000 * USDC_ONE);
+        uint256 booked = router.recordBridgeArrival(VENUE_B, 10_000 * USDC_ONE, false);
         assertEq(booked, 10_000 * USDC_ONE, "the arrival is booked as idle");
         assertFalse(vault.isVenuePending(VENUE_B), "and the in-flight flag clears");
 

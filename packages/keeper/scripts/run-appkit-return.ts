@@ -43,7 +43,9 @@ const bookArrival = async (venueId: number, _requested: bigint): Promise<void> =
   console.log(`\nbooking ${unaccounted} base-units (vault unaccountedBalance)`);
   const out = cast([
     'send', ARC_ROUTER,
-    'recordBridgeArrival(uint16,uint256)', String(venueId), String(unaccounted),
+    // See run-solana-return.ts: FINALIZE=true only when the position is closed.
+    'recordBridgeArrival(uint16,uint256,bool)',
+    String(venueId), String(unaccounted), String(process.env.FINALIZE === 'true'),
     '--rpc-url', ARC_RPC, '--private-key', evmPrivateKey, '--json',
   ]);
   console.log('  recordBridgeArrival tx:', JSON.parse(out).transactionHash);

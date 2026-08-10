@@ -97,10 +97,28 @@ export function planBookings(
 export const ROUTER_ABI = [
   {
     type: 'function', name: 'recordBridgeArrival', stateMutability: 'nonpayable',
-    inputs: [{ name: 'venueId', type: 'uint16' }, { name: 'amount', type: 'uint256' }],
+    inputs: [
+      { name: 'venueId', type: 'uint16' },
+      { name: 'amount', type: 'uint256' },
+      { name: 'finalize', type: 'bool' },
+    ],
     outputs: [{ name: 'booked', type: 'uint256' }],
   },
 ] as const;
+
+/**
+ * This job never finalizes.
+ *
+ * `finalize` writes off whatever book value the venue still claims after the
+ * arrival, as a realized loss. That is a judgement about a position being
+ * closed, and this job is not in a position to make it: it infers arrivals from
+ * `DepositForBurn` logs, so a partial return and a final one look identical
+ * from here. Booking one leg of a staged return with `finalize` would write off
+ * capital that is still on its way.
+ *
+ * An operator who knows the position is closed passes `true` deliberately.
+ */
+const SWEEP_NEVER_FINALIZES = false;
 
 /** The two fields of a block a block time is measured from. */
 export type BlockStamp = { number: bigint; timestamp: bigint };
@@ -460,7 +478,7 @@ export async function sweepBridgesJob(deps: SweepBridgesDeps): Promise<string> {
       if (arc.wallet) {
         const hash = await arc.wallet.writeContract({
           address: deps.router, abi: ROUTER_ABI, functionName: 'recordBridgeArrival',
-          args: [booking.venueId, booking.amount],
+          args: [booking.venueId, booking.amount, SWEEP_NEVER_FINALIZES],
           chain: arc.wallet.chain, account: arc.wallet.account!,
         });
         booked++;

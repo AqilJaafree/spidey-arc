@@ -55,7 +55,9 @@ contract Router is TransientReentrancyGuard {
     event BridgeConfirmed(uint16 indexed venueId);
     event BridgeReturned(uint16 indexed venueId, uint256 amount);
     event ExecutorSet(uint16 indexed venueId, address indexed executor);
-    event ConfigChanged(uint32 expectedHoldDays, uint64 minDwell, uint32 maxNetApyBps);
+    event ConfigChanged(
+        uint32 expectedHoldDays, uint64 minDwell, uint32 maxNetApyBps, uint16 maxCostBps
+    );
     event KeeperChanged(address indexed previous, address indexed next);
 
     // -----------------------------------------------------------------------
@@ -347,7 +349,26 @@ contract Router is TransientReentrancyGuard {
     ///      refuses because nothing here can unwind a position on another
     ///      chain. Capital instead arrives as a CCTP mint, and this records
     ///      it — bounded by what actually landed.
-    function recordBridgeArrival(uint16 venueId, uint256 amount)
+    /// @param finalize Whether the position is fully closed, exactly as in
+    ///        `returnToVault`. It has to exist on both paths or it exists on
+    ///        neither in practice: `returnToVault` is the only other caller of
+    ///        `recordVenueClosed`, and it reaches it *after* `executor.exit()`,
+    ///        which every asynchronous executor reverts by design. So on a hub
+    ///        whose venues are all remote — which is the Arc topology — the
+    ///        write-off was unreachable code, and the failure it exists to
+    ///        prevent was live again: a residual left on the book keeps
+    ///        `coverageBps` at 10000, no haircut applies, and `claimWithdraw`
+    ///        reverts `InsufficientIdle` rather than settling slightly short.
+    ///
+    ///        Deliberately attached to an arrival rather than exposed as a
+    ///        standalone `writeOffVenue`. A free-standing call would let a
+    ///        keeper zero any venue's book at any moment with no arrival to
+    ///        point at, outside `MAX_NAV_DELTA_BPS` and outside any evidence.
+    ///        Here the keeper may declare a position closed only at the moment
+    ///        it books what came back from it — the same discipline
+    ///        `returnToVault` already imposes, and no new power: `finalize` was
+    ///        already the keeper's to choose on the synchronous path.
+    function recordBridgeArrival(uint16 venueId, uint256 amount, bool finalize)
         external
         onlyKeeper
         returns (uint256 booked)
@@ -355,6 +376,12 @@ contract Router is TransientReentrancyGuard {
         if (amount == 0) revert ZeroAmount();
         booked = vault.recordBridgeArrival(venueId, amount);
         vault.setVenuePending(venueId, false);
+
+        if (finalize) {
+            uint256 writtenOff = vault.recordVenueClosed(venueId);
+            if (writtenOff > 0) emit VenueWrittenOff(venueId, writtenOff);
+        }
+
         emit BridgeReturned(venueId, booked);
     }
 
@@ -434,7 +461,7 @@ contract Router is TransientReentrancyGuard {
             maxNetApyBps: maxNetApyBps,
             maxCostBps: maxCostBps
         });
-        emit ConfigChanged(expectedHoldDays, minDwell, maxNetApyBps);
+        emit ConfigChanged(expectedHoldDays, minDwell, maxNetApyBps, maxCostBps);
     }
 
     function setKeeper(address next) external onlyOwner {

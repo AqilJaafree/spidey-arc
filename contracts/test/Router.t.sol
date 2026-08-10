@@ -68,6 +68,22 @@ contract RouterTest is Fixtures {
         assertFalse(ok, "2.43 x 1.75 = 4.26 days required, 2 expected -> decline");
     }
 
+    /// @dev `maxCostBps` bounds what a keeper may spend on a move as a share of
+    ///      the amount, so a change to it is a change to the vault's spending
+    ///      policy. It was the one field `ConfigChanged` did not carry, which
+    ///      made that change invisible to anyone reconstructing config from
+    ///      logs — §8.1 puts history in events, so a field missing from the
+    ///      event is a field with no history at all.
+    function test_configChangeIsFullyDescribedByItsEvent() public {
+        vm.prank(owner);
+        vm.expectEmit(false, false, false, true, address(router));
+        emit Router.ConfigChanged(3, 6 hours, 50_000, 250);
+        router.setConfig(3, 6 hours, 50_000, 250);
+
+        (,,, uint16 maxCostBps) = router.config();
+        assertEq(maxCostBps, 250, "and the stored value matches what was logged");
+    }
+
     function test_rebalanceRejectsMoveWithNoEdge() public {
         _seedVenueA(10_000 * USDC_ONE);
         _warpPastDwell();

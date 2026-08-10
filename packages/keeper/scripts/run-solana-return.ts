@@ -170,7 +170,13 @@ const bookArrival = async (venue: number): Promise<void> => {
   console.log(`\nbooking ${usd(unaccounted)} against venue ${venue} (vault unaccountedBalance)`);
   const out = cast([
     'send', ARC_ROUTER,
-    'recordBridgeArrival(uint16,uint256)', String(venue), String(unaccounted),
+    // `finalize` writes off whatever the venue's book still claims after this
+    // booking. Opt-in via FINALIZE=true, and only when the Solana position is
+    // actually closed — on a partial return it would write off capital still
+    // deployed. Left false, a residual keeps `coverageBps` at 10000 and stalls
+    // the withdrawal queue, so this is a choice to make, not to default.
+    'recordBridgeArrival(uint16,uint256,bool)',
+    String(venue), String(unaccounted), String(process.env.FINALIZE === 'true'),
     '--rpc-url', ARC_RPC, '--private-key', evmPrivateKey, '--json',
   ]);
   console.log('  recordBridgeArrival tx:', JSON.parse(out).transactionHash);

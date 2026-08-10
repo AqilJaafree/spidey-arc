@@ -200,7 +200,7 @@ contract CctpBridgeTest is Fixtures {
         assertEq(vault.unaccountedBalance(), 9_900 * USDC_ONE, "arrived, not yet booked");
 
         vm.prank(keeper);
-        uint256 booked = router.recordBridgeArrival(VENUE_B, 9_900 * USDC_ONE);
+        uint256 booked = router.recordBridgeArrival(VENUE_B, 9_900 * USDC_ONE, false);
 
         assertEq(booked, 9_900 * USDC_ONE, "booked what landed");
         assertEq(vault.idleAssets(), 9_900 * USDC_ONE, "now idle and usable");
@@ -219,7 +219,7 @@ contract CctpBridgeTest is Fixtures {
 
         vm.prank(keeper);
         vm.expectRevert(abi.encodeWithSelector(LPVault.NoSuchArrival.selector, 10_000 * USDC_ONE, 0));
-        router.recordBridgeArrival(VENUE_B, 10_000 * USDC_ONE);
+        router.recordBridgeArrival(VENUE_B, 10_000 * USDC_ONE, false);
 
         assertEq(vault.idleAssets(), 0, "no assets conjured");
     }
@@ -235,12 +235,111 @@ contract CctpBridgeTest is Fixtures {
 
         vm.prank(keeper);
         if (claimed <= arrived) {
-            assertEq(router.recordBridgeArrival(VENUE_B, claimed), claimed);
+            assertEq(router.recordBridgeArrival(VENUE_B, claimed, false), claimed);
             assertLe(vault.idleAssets(), usdc.balanceOf(address(vault)), "still solvent");
         } else {
             vm.expectRevert();
-            router.recordBridgeArrival(VENUE_B, claimed);
+            router.recordBridgeArrival(VENUE_B, claimed, false);
         }
+    }
+
+    /// @dev Set up the case the write-off exists for: a holder who has already
+    ///      asked to leave, and a venue that comes home short.
+    ///
+    ///      The order is the one that actually happens — request first, capital
+    ///      back second — so the payout was fixed before the loss was known.
+    ///      That is what leaves `pending` above what the vault holds.
+    function _requestThenBridgeBackShort()
+        private
+        returns (uint256 requestId, uint256 owedAtRequest)
+    {
+        depositAs(alice, 10_000 * USDC_ONE);
+        _deployToBase(10_000 * USDC_ONE, _bridgeParams(1 * USDC_ONE, 2000));
+
+        // Read the balance BEFORE the prank: `vm.prank` applies to the next
+        // call, and an argument expression is a call too.
+        uint256 shares = vault.balanceOf(alice);
+        vm.prank(alice);
+        requestId = vault.requestWithdraw(shares);
+        (owedAtRequest,,) = vault.pendingOf(alice);
+
+        // The far side unwinds and bridges back 9,900 of the 10,000 — fees and
+        // slippage. 100 stays on the venue's book as capital that did not
+        // return.
+        usdc.mint(address(vault), 9_900 * USDC_ONE);
+    }
+
+    /// @dev The bug, stated as the depositor experiences it.
+    ///
+    ///      Without the write-off the venue's book still claims the 100 that
+    ///      never came back, so `available` covers `pending`, `coverageBps`
+    ///      reads 10000, no haircut applies — and the claim then asks for more
+    ///      idle than exists. The holder is not paid slightly less. The holder
+    ///      cannot be paid at all.
+    function test_anUnwrittenResidualStrandsTheQueue() public {
+        (uint256 requestId, uint256 owedAtRequest) = _requestThenBridgeBackShort();
+
+        vm.prank(keeper);
+        router.recordBridgeArrival(VENUE_B, 9_900 * USDC_ONE, false);
+
+        (uint128 book,,,,,) = vault.venues(VENUE_B);
+        assertEq(book, 100 * USDC_ONE, "the shortfall is still on the book");
+        assertEq(vault.coverageBps(), 10_000, "so the vault still looks fully covered");
+
+        vm.prank(operator);
+        vault.settleEpoch();
+
+        vm.prank(alice);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                LPVault.InsufficientIdle.selector, owedAtRequest, 9_900 * USDC_ONE
+            )
+        );
+        vault.claimWithdraw(requestId);
+    }
+
+    /// @dev And the fix. Finalizing recognizes the 100 as the realized loss it
+    ///      is, coverage falls to 9900, and the claim settles short instead of
+    ///      reverting — the loss taken by the holder who incurred it.
+    function test_finalizingABridgeArrivalLetsTheClaimSettleShort() public {
+        (uint256 requestId, uint256 owedAtRequest) = _requestThenBridgeBackShort();
+
+        vm.prank(keeper);
+        vm.expectEmit(true, false, false, true, address(router));
+        emit Router.VenueWrittenOff(VENUE_B, 100 * USDC_ONE);
+        router.recordBridgeArrival(VENUE_B, 9_900 * USDC_ONE, true);
+
+        (uint128 book,,,,,) = vault.venues(VENUE_B);
+        assertEq(book, 0, "nothing left on the book");
+        assertEq(vault.deployedAssets(), 0, "and nothing left in the aggregate");
+        assertEq(vault.coverageBps(), 9_900, "coverage now tells the truth");
+
+        vm.prank(operator);
+        vault.settleEpoch();
+
+        vm.prank(alice);
+        uint256 paid = vault.claimWithdraw(requestId);
+
+        assertEq(paid, (owedAtRequest * 9_900) / 10_000, "paid the haircut share");
+        assertLt(paid, owedAtRequest, "short of what was fixed at request");
+        assertEq(usdc.balanceOf(alice), 10_000_000 * USDC_ONE - 10_000 * USDC_ONE + paid);
+    }
+
+    /// @dev The flag is doing the work, not the arrival. A venue that returns
+    ///      everything has no residual, so finalizing is a no-op rather than a
+    ///      write-off of something still live.
+    function test_finalizingAFullReturnWritesOffNothing() public {
+        depositAs(alice, 10_000 * USDC_ONE);
+        _deployToBase(10_000 * USDC_ONE, _bridgeParams(1 * USDC_ONE, 2000));
+        usdc.mint(address(vault), 10_000 * USDC_ONE);
+
+        vm.prank(keeper);
+        router.recordBridgeArrival(VENUE_B, 10_000 * USDC_ONE, true);
+
+        (uint128 book,,,,,) = vault.venues(VENUE_B);
+        assertEq(book, 0, "book was already clear");
+        assertEq(vault.idleAssets(), 10_000 * USDC_ONE, "everything came home");
+        assertEq(vault.totalAssets(), 10_000 * USDC_ONE, "and equity is unchanged");
     }
 
     function test_declaresItselfAsynchronous() public view {
