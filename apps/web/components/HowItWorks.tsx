@@ -10,23 +10,23 @@ import { CONTRACTS, explorerAddress } from '@/lib/chain';
 const STEPS = [
   {
     n: '01',
-    title: 'Measure what actually earns',
-    body: 'Only liquidity in range collects fees. Adapters read it per venue and report null when they cannot — an excluded pool, never an estimated one.',
+    title: 'We check what is really earning',
+    body: 'A pool only pays fees on money parked at the current price. We measure that part, not the headline total. If a pool will not tell us, we leave it out rather than guess.',
   },
   {
     n: '02',
-    title: 'Price it at your size',
-    body: 'Your deposit joins the denominator, so the rate depends on how much you add. Every venue is scored at the size you asked for, not at an ideal one.',
+    title: 'We price it for your amount',
+    body: 'Your deposit shares the fees with everyone already there, so a big deposit earns a lower rate than a small one. Every pool is scored for the amount you typed in.',
   },
   {
     n: '03',
-    title: 'Rank, then refuse to churn',
-    body: 'Moving capital costs gas, slippage and a bridge. The Router re-checks on-chain that the yield gain repays that cost over the expected hold, with hysteresis so it cannot flip-flop.',
+    title: 'We only move when it pays for itself',
+    body: 'Switching pools costs fees. Before moving your money the contract checks on-chain that the extra interest covers that cost within the time you plan to stay. If it does not, nothing moves.',
   },
   {
     n: '04',
-    title: 'Deposit, and exit through a queue',
-    body: 'The vault is ERC-4626 over USDC on Arc. Capital sitting in a position on another chain cannot return in one transaction, so withdrawals are request-then-claim rather than a promise it cannot keep.',
+    title: 'Putting money in, and taking it out',
+    body: 'Deposits go into a vault on Arc and you get shares back. Withdrawals are a two-step request and claim, because money working in a pool on another blockchain cannot come back instantly.',
   },
 ];
 
@@ -52,7 +52,7 @@ export function HowItWorks() {
       </ol>
 
       <p className="text-xs text-muted-foreground">
-        The vault runs on Arc testnet at{' '}
+        This is a test network, so the money is not real. The vault is at{' '}
         <a
           href={explorerAddress(CONTRACTS.vault)}
           target="_blank"
@@ -61,8 +61,7 @@ export function HowItWorks() {
         >
           {CONTRACTS.vault.slice(0, 10)}…{CONTRACTS.vault.slice(-6)}
         </a>
-        . Scores are posted as one Merkle root per epoch, so anyone can rebuild the tree and check
-        it.
+        . Every score we publish is recorded on-chain, so anyone can check our working.
       </p>
     </section>
   );

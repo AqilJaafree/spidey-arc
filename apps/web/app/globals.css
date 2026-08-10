@@ -19,6 +19,15 @@
  * (relative-luminance contrast, not eyeballed) against the surface it is
  * actually used on — see the notes inline.
  */
+/*
+ * The sticky site header's height, so anything that has to sit *under* it can
+ * say so once. Previously the pool table hard-coded 69px in a comment that
+ * explained the number but could not track it.
+ */
+:root {
+  --header-h: 69px;
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);

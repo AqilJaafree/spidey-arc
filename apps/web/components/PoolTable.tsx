@@ -23,15 +23,30 @@ export function PoolTable({ rows }: { rows: CompareRow[] }) {
   return (
     <>
       <div className="relative hidden rounded border border-border lg:block">
-        <div className={`overflow-auto ${scrolls ? 'max-h-[32rem]' : ''}`}>
+        {/*
+          `overflow-auto` only when the table actually scrolls. Applied
+          unconditionally it still makes this div a scroll container, and a
+          `sticky` child then anchors to the div rather than the viewport —
+          which pushed the header row a full header-height DOWN inside the
+          border and left a gap above it.
+        */}
+        <div className={scrolls ? 'max-h-[32rem] overflow-auto' : ''}>
           <table className="w-full min-w-[52rem] text-sm">
             <caption className="sr-only">
-              USDC LP venues, showing headline APR against the APR for your deposit size
+              Pools, showing the advertised rate against the rate your deposit would actually get
             </caption>
               <thead>
-                {/* top-[69px] clears the page header's own height (see z-index scale note
-                    in globals.css) so this sticks just below it, not underneath it. */}
-                <tr className="sticky top-[69px] z-10 border-b border-border bg-muted text-left">
+                {/*
+                  Two different anchors, because there are two different
+                  scroll parents. When the table scrolls internally the header
+                  pins to the top of that box; when the page scrolls it pins
+                  just below the site header.
+                */}
+                <tr
+                  className={`sticky z-10 border-b border-border bg-muted text-left ${
+                    scrolls ? 'top-0' : 'top-[var(--header-h)]'
+                  }`}
+                >
                   <th scope="col" className="px-4 py-3 text-xs font-medium tracking-wide uppercase">
                     Pool
                   </th>
@@ -39,13 +54,13 @@ export function PoolTable({ rows }: { rows: CompareRow[] }) {
                     scope="col"
                     className="px-4 py-3 text-right text-xs font-medium tracking-wide text-muted-foreground uppercase"
                   >
-                    Headline APR
+                    Advertised
                   </th>
                   <th
                     scope="col"
                     className="px-4 py-3 text-right text-xs font-medium tracking-wide uppercase"
                   >
-                    Your APR
+                    You get
                   </th>
                   <th
                     scope="col"
@@ -57,13 +72,13 @@ export function PoolTable({ rows }: { rows: CompareRow[] }) {
                     scope="col"
                     className="px-4 py-3 text-right text-xs font-medium tracking-wide text-muted-foreground uppercase"
                   >
-                    TVL
+                    Pool size
                   </th>
                   <th
                     scope="col"
                     className="px-4 py-3 text-right text-xs font-medium tracking-wide text-muted-foreground uppercase"
                   >
-                    In range
+                    Earning fees
                   </th>
                   <th scope="col" className="px-4 py-3 text-xs font-medium tracking-wide uppercase">
                     Why
@@ -122,7 +137,7 @@ export function PoolTable({ rows }: { rows: CompareRow[] }) {
                           <>
                             <div>{usdCompact(row.activeTvlUsd)}</div>
                             <div className="text-xs text-muted-foreground">
-                              {percentFromFraction(row.activeTvlShare)} of TVL
+                              {percentFromFraction(row.activeTvlShare)} of the pool
                             </div>
                           </>
                         )}
@@ -199,14 +214,14 @@ export function PoolTable({ rows }: { rows: CompareRow[] }) {
                         className="h-3.5 w-3.5 shrink-0 transition-transform duration-150 group-open:rotate-90"
                         aria-hidden
                       />
-                      Headline APR, TVL, in-range detail
+                      Advertised rate, pool size, and how much is earning
                     </summary>
                     <dl className="tabular mt-1 grid grid-cols-2 gap-x-4 gap-y-1.5 rounded-sm bg-muted/40 p-3">
-                      <dt className="text-muted-foreground">Headline APR</dt>
+                      <dt className="text-muted-foreground">Advertised</dt>
                       <dd className="text-right">{aprFromBps(row.headlineAprBps)}</dd>
-                      <dt className="text-muted-foreground">TVL</dt>
+                      <dt className="text-muted-foreground">Pool size</dt>
                       <dd className="text-right">{usdCompact(row.tvlUsd)}</dd>
-                      <dt className="text-muted-foreground">In range</dt>
+                      <dt className="text-muted-foreground">Earning fees</dt>
                       <dd className="text-right">
                         {row.activeTvlUsd === null ? '—' : usdCompact(row.activeTvlUsd)}
                         {row.activeTvlShare !== null && (

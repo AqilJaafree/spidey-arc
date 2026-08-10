@@ -146,10 +146,10 @@ export function DilutionChart({ pools, atSizeUsd }: Props) {
 
   return (
     <figure className="rounded border border-border bg-card p-5 sm:p-6">
-      <figcaption className="text-sm font-semibold">What each venue pays, by deposit size</figcaption>
+      <figcaption className="text-sm font-semibold">Your rate as your deposit grows</figcaption>
       <p className="mt-1 mb-4 max-w-2xl text-xs leading-relaxed text-muted-foreground">
-        Your deposit joins the denominator, so the rate falls as you add to it. Thin pools fall
-        fastest. Where two lines cross, the better venue changes.
+        The more you put in, the more people you share the fees with — so every line slopes down.
+        Small pools drop fastest. Where two lines cross, the better pool swaps.
       </p>
 
       <div className="overflow-x-auto">
@@ -157,9 +157,9 @@ export function DilutionChart({ pools, atSizeUsd }: Props) {
           viewBox={`0 0 ${W} ${H}`}
           className="w-full min-w-[560px] text-muted-foreground"
           role="img"
-          aria-label={`Projected APR against deposit size for ${model.series.length} venues, ${
+          aria-label={`Estimated yearly rate against deposit size for ${model.series.length} pools, with ${
             model.crossings.length
-          } crossing points between $100 and $1M`}
+          } points where the best pool changes, between $100 and $1M`}
           onMouseMove={(e) => {
             const box = e.currentTarget.getBoundingClientRect();
             setHoverX(((e.clientX - box.left) / box.width) * W);
@@ -210,7 +210,7 @@ export function DilutionChart({ pools, atSizeUsd }: Props) {
                 x={x(atSizeUsd)} y={PAD.top - 4} textAnchor="middle"
                 className="fill-current text-[9px] tabular opacity-70"
               >
-                your size
+                your amount
               </text>
             </>
           )}
@@ -307,7 +307,7 @@ export function DilutionChart({ pools, atSizeUsd }: Props) {
           {model.crossings.map((c, i) => (
             <span key={`${c.fromPoolId}-${c.toPoolId}`}>
               {i > 0 && ' '}
-              Past {usdCompact(c.sizeUsd)}, {c.to} overtakes {c.from}.
+              Above {usdCompact(c.sizeUsd)}, {c.to} pays more than {c.from}.
             </span>
           ))}
         </p>
@@ -319,7 +319,7 @@ export function DilutionChart({ pools, atSizeUsd }: Props) {
         aria-expanded={showTable}
         className="mt-3 inline-flex min-h-11 items-center text-xs text-muted-foreground underline decoration-border underline-offset-4 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
       >
-        {showTable ? 'Hide the numbers' : 'Show the numbers'}
+        {showTable ? 'Hide the numbers' : 'Show these as numbers'}
       </button>
 
       {showTable && (

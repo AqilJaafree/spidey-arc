@@ -1,8 +1,32 @@
 # Spidey — cross-chain USDC LP yield router
 
-Aggregators rank USDC LP venues on fees over *displayed* TVL. Only in-range liquidity earns fees, and your own deposit changes the denominator — so **the best pool is a function of how much you deposit**, and no dashboard asks you for that.
+## The problem
 
-This scores venues with dilution- and cost-aware math, then routes capital only when the yield gain repays the cost of moving it.
+Every yield dashboard shows one rate per pool. That rate is a lie of omission, in two ways.
+
+**It counts money that is not earning.** A concentrated-liquidity pool only pays fees on liquidity parked at the current price. The rest sits out of range earning nothing, but it is still in the TVL the rate was divided by. Live, that gap runs from 0.45% to 54% of a pool's headline TVL actually being in range.
+
+**It assumes you are not in it yet.** Your deposit joins the same denominator. Put $10k into a pool with $115k working and you have diluted the rate by 8%; put in $1M and there is barely a rate left.
+
+Together those mean **the best pool is a function of how much you deposit** — and no dashboard asks you for that number.
+
+Spidey does. It measures what is genuinely in range per venue, re-prices every pool for your size, and then moves capital only when the extra yield repays the cost of moving it.
+
+Live example — SOL/USDC on Orca:
+
+```mermaid
+flowchart LR
+    subgraph pool["Displayed TVL $25.5M"]
+        OUT["$25.4M out of range<br/>earns nothing"]
+        IN["$115k in range<br/>earns every fee"]
+    end
+    IN --> CALC["fees over $115k<br/>+ your deposit"]
+    YOU["your $10,000"] --> CALC
+    CALC --> REAL["the rate you get"]
+    pool -.->|"fees over $25.5M"| HEAD["the rate they show"]
+```
+
+The dashboard divides by 222x more money than is actually working.
 
 ---
 
@@ -116,15 +140,47 @@ So adapters report `null` when they cannot measure, every number carries the ran
 
 ## Architecture
 
+```mermaid
+flowchart TB
+    subgraph offchain["Off-chain — proposes"]
+        AD["adapters<br/><i>Meteora · Orca · Uniswap v3<br/>Raydium · DefiLlama</i>"]
+        CO["core<br/><i>scoring math, pure</i>"]
+        AP["api<br/><i>Hono, TTL-cached</i>"]
+        WEB["web<br/><i>Next.js</i>"]
+        KE["keeper<br/><i>Merkle tree · planner · relayer</i>"]
+        AD --> CO --> AP --> WEB
+        CO --> KE
+    end
+
+    subgraph arc["Arc testnet — the hub, disposes"]
+        OR["ScoreOracle<br/><i>one Merkle root per epoch</i>"]
+        RO["Router<br/><i>re-checks payback on-chain</i>"]
+        VA["LPVault<br/><i>ERC-4626 over USDC</i>"]
+        BX["CctpBridgeExecutor"]
+        OR --> RO
+        RO --> VA
+        RO --> BX
+    end
+
+    subgraph base["Base Sepolia"]
+        RL["CctpReturnRelay<br/><i>only exit is home</i>"]
+        UV["UniV3Executor"]
+    end
+
+    subgraph sol["Solana devnet"]
+        MR["MeteoraReceiver<br/><i>CCTP hook · DLMM</i>"]
+    end
+
+    KE -->|"posts scores + NAV"| OR
+    KE -->|"proposes moves"| RO
+    WEB -->|"deposit · request · claim"| VA
+    BX -->|"CCTP domain 6"| RL
+    BX -->|"CCTP domain 5"| MR
+    RL -->|"domain 26, keeper-initiated"| VA
+    MR -.->|"return leg starts here"| VA
 ```
-  packages/core      scoring math + rank(A). Pure — no I/O.
-  packages/adapters  Meteora, Orca, Uniswap v3, Raydium, DefiLlama → NormalizedPool
-  packages/api       Hono HTTP surface, TTL-cached
-  packages/keeper    Merkle tree builder, rebalance planner, CCTP relayer
-  apps/web           Next.js — comparison UI, and the vault's own front door
-  contracts/         LPVault (ERC-4626) + ScoreOracle + Router + UniV3Executor
-  solana/            MeteoraReceiver — two-stage CCTP hook, DLMM in and out (Anchor)
-```
+
+**The split is the design.** Off-chain proposes; on-chain disposes. The scoring engine can be wrong or captured and still cannot move your money — the Router re-checks the payback rule in integer arithmetic and declines if it does not hold.
 
 Three contracts do the work:
 
@@ -136,13 +192,13 @@ No off-chain party holds a key that can move user funds. The reporter posts scor
 
 ## Using the vault
 
-`/vault` connects a wallet to the Arc hub and runs the depositor cycle: deposit, request, claim. Wallet discovery is EIP-6963 — no wallet library, no WalletConnect project id. No wallet ships Arc, so connecting offers to add it; chain 5042002, and the gas token is USDC at 18 native decimals over the same balance the vault reads at 6 through the ERC-20 shim.
+`/vault` connects a wallet to the Arc hub and runs the depositor cycle: deposit, request, claim. Discovery is EIP-6963 — no wallet library, no WalletConnect project id. No wallet ships Arc, so connecting offers to add it.
 
-Three decimal scales meet on that page and mixing them is the easiest way to put a wrong number on screen: **USDC 6, spUSDC shares 9** (ERC-4626 adds the 3-place virtual-share offset), **native gas 18**.
+Three decimal scales meet there, and mixing them is the easiest way to put a wrong number on screen: **USDC 6**, **spUSDC shares 9** (ERC-4626 adds a 3-place offset), **native gas 18** — the last two views of the same balance, so gas and deposits come out of one pot.
 
-Every action is simulated against the node before the wallet is asked to sign, and a refusal arrives as a sentence rather than a hex blob. That is the exclusion table's rule applied to transactions — name the reason, never approximate it — and it is not decorative: the queue genuinely refuses to pay out of a mark older than six hours, and the page says so instead of spending a transaction to find out.
+Every action is simulated before the wallet is asked to sign, so a refusal arrives as a sentence rather than a hex blob. Not decorative: the queue refuses to pay out of a mark older than six hours, and the page says so instead of spending a transaction to find out.
 
-The route diagram animates the same way. A dash travels the Arc → Base or Arc → Solana path when, and only when, that venue carries `FLAG_PENDING_HOOK` — burned here, not yet minted there, claimable in neither place. If the line moves, capital is in flight; nothing animates on a timer. Motion primitives are React Bits, adapted down to what the brief allows and skipped entirely under `prefers-reduced-motion`.
+The route diagram animates on the same principle. A dash travels the Arc → Base or Arc → Solana path only while that venue carries `FLAG_PENDING_HOOK` — burned here, not yet minted there, claimable in neither place. If the line moves, capital is in flight. Motion primitives are React Bits, cut down to what the brief allows and skipped under `prefers-reduced-motion`.
 
 ## Arc → Base Sepolia, over CCTP
 

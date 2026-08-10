@@ -10,7 +10,6 @@ import { aprFromBps, dexName, gapInPoints, gapTone, relativeTime, usdFull } from
 import { ExcludedGroups } from '@/components/ExcludedGroups';
 import { DilutionChart } from '@/components/DilutionChart';
 import { HowItWorks } from '@/components/HowItWorks';
-import { Logo } from '@/components/Logo';
 import { PoolTable, PoolTableSkeleton } from '@/components/PoolTable';
 import { SizeControls } from '@/components/SizeControls';
 import { SiteHeader } from '@/components/SiteHeader';
@@ -114,23 +113,20 @@ function PageContent() {
 
       <main className="mx-auto max-w-7xl px-4 py-10 md:px-6 lg:px-8">
         <section className="mb-10 max-w-3xl space-y-3">
-          <div className="flex items-center gap-3">
-            <Logo size={40} />
-            <p className="text-sm font-semibold tracking-tight">Spidey</p>
-          </div>
           <h1 className="text-4xl leading-tight font-semibold tracking-tight text-balance md:text-5xl">
             What you actually earn
           </h1>
           <p className="text-base leading-relaxed text-muted-foreground">
-            Aggregators rank USDC LP venues on fees over <em>displayed</em> TVL. Only in-range
-            liquidity earns fees, and your own deposit changes the denominator. So the best pool is
-            a function of how much you deposit — and nothing else asks you for that.
+            Most sites show one interest rate per pool. That rate assumes you are not in it yet.
+            The moment you deposit, you share the same fees with more money, so your rate is lower
+            than the one advertised — and how much lower depends on how much you put in. Enter your
+            amount and see the rate you would actually get.
           </p>
         </section>
 
         <section aria-labelledby="controls-heading" className="mb-8">
           <h2 id="controls-heading" className="mb-3 text-sm font-semibold">
-            Position parameters
+            Your deposit
           </h2>
           <SizeControls
             sizeUsd={sizeUsd}
@@ -161,7 +157,8 @@ function PageContent() {
               ))}
             </div>
             <p className="text-xs text-muted-foreground">
-              A USDC vault takes no directional risk, so stable pairs are the default universe.
+              Stablecoin pairs by default — they do not move in price, so your deposit is not
+              exposed to a token going up or down.
             </p>
           </div>
         </section>
@@ -179,19 +176,19 @@ function PageContent() {
               <span className="tabular text-primary">{aprFromBps(best.yourAprBps)}</span>
               {heroGap && heroGap.direction !== 'level' && (
                 <span className={`tabular text-2xl md:text-3xl ${gapTone(heroGap.direction)}`}>
-                  {heroGap.label} vs. headline
+                  {heroGap.label} vs. advertised
                 </span>
               )}
             </p>
             <p className="tabular mt-2 text-sm text-muted-foreground">
-              Headline APR for this pool: {aprFromBps(best.headlineAprBps)}
+              Advertised rate for this pool: {aprFromBps(best.headlineAprBps)}
             </p>
 
             {heroGap?.direction === 'above' && (
               <p className="mt-3 max-w-2xl text-sm text-muted-foreground">
-                This can happen when your deposit sits inside a narrower, more active range than
-                the pool&apos;s full liquidity — you capture a larger share of the fees actually
-                being paid than the blended headline rate implies.
+                This pool pays you more than advertised. The headline rate is averaged over all
+                the money in the pool, including money parked away from the current price that
+                earns nothing. Yours sits where the trading happens, so it earns a bigger share.
               </p>
             )}
             {heroGap?.direction === 'below' && best.flags.includes('dilution') && (
@@ -215,7 +212,7 @@ function PageContent() {
               href="#how-it-works"
               className="mt-4 inline-flex min-h-11 items-center text-xs text-muted-foreground underline decoration-border underline-offset-4 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background focus-visible:outline-none"
             >
-              How this works ↓
+              How we work this out ↓
             </a>
           </section>
         )}
@@ -257,11 +254,11 @@ function PageContent() {
         <section aria-labelledby="ranked-heading" className="space-y-3">
           <div className="flex flex-wrap items-baseline justify-between gap-2">
             <h2 id="ranked-heading" className="text-lg font-medium">
-              Ranked for {usdFull(sizeUsd)}
+              Best pools for {usdFull(sizeUsd)}
             </h2>
             {data && (
               <p className="tabular text-xs text-muted-foreground">
-                {ranked.length} rankable · data {relativeTime(data.fetchedAt)}
+                {ranked.length} pools we can measure · updated {relativeTime(data.fetchedAt)}
               </p>
             )}
           </div>
@@ -277,8 +274,8 @@ function PageContent() {
                 <div className="space-y-1">
                   <p className="text-sm font-medium">No venue can be scored right now</p>
                   <p className="max-w-sm text-xs text-muted-foreground">
-                    Every pool we found is missing an in-range denominator or has stale data. We
-                    exclude rather than approximate, so nothing is shown.
+                    For every pool we found, the data we need is missing or out of date. We would
+                    rather show nothing than show you a guess.
                   </p>
                 </div>
                 <button
@@ -297,7 +294,7 @@ function PageContent() {
         {curvable.length >= 2 && (
           <section aria-labelledby="curve-heading" className="mt-10 space-y-3">
             <h2 id="curve-heading" className="text-lg font-medium">
-              The same venues, across sizes
+              What happens if you deposit more
             </h2>
             <DilutionChart pools={curvable} atSizeUsd={sizeUsd} />
           </section>
@@ -312,9 +309,8 @@ function PageContent() {
                 Excluded — {excluded.length}
               </h2>
               <p className="max-w-2xl text-sm text-muted-foreground">
-                These pools appear on dashboards but cannot be scored honestly. An approximated
-                denominator would reintroduce the exact error this tool exists to remove, so they
-                are listed with a reason instead of a number.
+                For these pools we could not get the numbers needed to work out an honest rate.
+                Rather than show you a guess, we list them with the reason.
               </p>
             </div>
             <ExcludedGroups rows={excluded} />
@@ -323,9 +319,11 @@ function PageContent() {
       </main>
 
       <footer className="mt-12 border-t border-border bg-muted/30">
-        <div className="mx-auto flex max-w-7xl items-center gap-2 px-4 py-8 md:px-6 lg:px-8">
-          <Logo size={18} />
-          <p className="text-xs text-muted-foreground">Spidey · USDC LP Vault</p>
+        <div className="mx-auto max-w-7xl px-4 py-8 md:px-6 lg:px-8">
+          <p className="max-w-2xl text-xs leading-relaxed text-muted-foreground">
+            Rates shown are estimates based on recent trading activity. They are not a promise of
+            future return, and providing liquidity can lose money.
+          </p>
         </div>
       </footer>
     </>

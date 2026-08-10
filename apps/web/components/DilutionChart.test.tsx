@@ -30,14 +30,14 @@ describe('DilutionChart', () => {
   // The whole reason the chart replaced the formula.
   it('names where the better venue changes', () => {
     render(<DilutionChart pools={[THIN, DEEP]} atSizeUsd={10_000} />);
-    expect(screen.getByText(/overtakes/i)).toBeInTheDocument();
+    expect(screen.getByText(/pays more than/i)).toBeInTheDocument();
   });
 
   it('says nothing about crossings when one venue leads throughout', () => {
     const a = pool({ poolId: 'a', label: 'A', activeTvlUsd: 1_000_000, yourAprBps: 2_000 });
     const b = pool({ poolId: 'b', label: 'B', activeTvlUsd: 1_000_000, yourAprBps: 500 });
     render(<DilutionChart pools={[a, b]} atSizeUsd={10_000} />);
-    expect(screen.queryByText(/overtakes/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/pays more than/i)).not.toBeInTheDocument();
   });
 
   // Excluded rows stay excluded: a drawn line reads as a measurement.
@@ -68,7 +68,7 @@ describe('DilutionChart', () => {
     render(<DilutionChart pools={[THIN, DEEP]} atSizeUsd={10_000} />);
 
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: /show the numbers/i }));
+    await user.click(screen.getByRole('button', { name: /show these as numbers/i }));
     expect(screen.getByRole('table')).toBeInTheDocument();
   });
 
