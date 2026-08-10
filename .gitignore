@@ -29,3 +29,6 @@ contracts/lib/
 # Solana keypairs — never commit
 solana/.keys/
 **/*-keypair.json
+
+# Netlify CLI local state
+.netlify

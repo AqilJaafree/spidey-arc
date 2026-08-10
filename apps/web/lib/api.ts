@@ -1,5 +1,7 @@
 /** Client for the scoring engine (`@spidey/api`). */
 
+import { ENGINE_URL as API_URL } from './apiTarget';
+
 /**
  * Mirrors `PoolFlag` in `@spidey/core`. Deliberately a copy rather than an
  * import: this is an HTTP contract, and the web app should not compile against
@@ -54,8 +56,6 @@ export type CompareResponse = {
   };
   rows: CompareRow[];
 };
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8787';
 
 export async function fetchCompare(
   sizeUsd: number,

@@ -1,0 +1,38 @@
+# Netlify builds `apps/web` out of the pnpm workspace root, so the workspace
+# packages it depends on (`@spidey/core`) resolve. `transpilePackages` in
+# `next.config.ts` handles them shipping as TypeScript source with no build step.
+#
+# The scoring engine is NOT deployed here. A cold scan of 207 pools takes ~8.4s
+# against Netlify's 10s synchronous function limit, and a serverless invocation
+# gets no shared cache — so every cold request would pay that and some would
+# lose. It runs as a long-lived process elsewhere and `NEXT_PUBLIC_API_URL`
+# points at it.
+#
+# `/vault` needs none of that: it reads Arc directly from the browser.
+
+[build]
+  command = "pnpm --filter @spidey/web build"
+  publish = "apps/web/.next"
+
+[build.environment]
+  NODE_VERSION = "22"
+  # The repo pins pnpm 10 in `packageManager`; Corepack honours it.
+  NETLIFY_USE_PNPM = "true"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
+
+# `NEXT_PUBLIC_API_URL` is read in `next.config.ts` and therefore baked at
+# BUILD time, not read at runtime. Changing it needs a redeploy, not just an
+# environment edit — set it in the Netlify UI under Site configuration →
+# Environment variables, then trigger a build.
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    X-Frame-Options = "DENY"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    # The vault page talks to one RPC and nothing else. No wallet library is
+    # loaded from a CDN, so nothing needs to be allowed beyond self.
+    Permissions-Policy = "geolocation=(), camera=(), microphone=(), payment=()"

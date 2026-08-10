@@ -1,9 +1,11 @@
 'use client';
 
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { AlertCircle, Inbox, RefreshCw } from 'lucide-react';
 import { fetchCompare, type CompareResponse } from '@/lib/api';
+import { engineIsLocal } from '@/lib/apiTarget';
 import { aprFromBps, gapInPoints, gapTone, relativeTime, usdFull } from '@/lib/format';
 import { ExcludedGroups } from '@/components/ExcludedGroups';
 import { PoolTable, PoolTableSkeleton } from '@/components/PoolTable';
@@ -203,9 +205,19 @@ function PageContent() {
             <div className="flex-1">
               <p className="font-medium">Could not reach the scoring engine</p>
               <p className="mt-0.5 text-sm text-muted-foreground">{error}</p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Start it with <code className="tabular">pnpm api</code>, then retry.
-              </p>
+              {engineIsLocal() ? (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Start it with <code className="tabular">pnpm api</code>, then retry.
+                </p>
+              ) : (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  The engine is a long-lived process and is not deployed yet. The{' '}
+                  <Link href="/vault" className="underline decoration-border underline-offset-4 hover:text-foreground">
+                    vault
+                  </Link>{' '}
+                  needs it for nothing and is live.
+                </p>
+              )}
             </div>
             <button
               type="button"
