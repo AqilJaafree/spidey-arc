@@ -175,7 +175,7 @@ export function depositReadiness(
       reason: {
         code: 'ZeroAmount',
         title: 'Enter an amount',
-        detail: 'A deposit of nothing mints no shares.',
+        detail: 'Enter an amount above zero.',
       },
     };
   }
@@ -187,7 +187,7 @@ export function depositReadiness(
       reason: {
         code: 'InsufficientBalance',
         title: 'More than your balance',
-        detail: `You hold ${usdc(holder.usdcBalance)} and are trying to deposit ${usdc(amount)}.`,
+        detail: `You have ${usdc(holder.usdcBalance)}, and this asks for ${usdc(amount)}.`,
       },
     };
   }
@@ -422,7 +422,7 @@ const REFUSALS: Record<string, (args: readonly unknown[]) => Omit<Refusal, 'code
   }),
   ERC20InsufficientBalance: () => ({
     title: 'Not enough USDC',
-    detail: 'The wallet does not hold the amount being deposited.',
+    detail: 'Your wallet does not hold that much.',
   }),
 };
 

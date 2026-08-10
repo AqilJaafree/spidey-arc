@@ -146,9 +146,9 @@ export function DilutionChart({ pools, atSizeUsd }: Props) {
 
   return (
     <figure className="rounded border border-border bg-card p-5 sm:p-6">
-      <figcaption className="text-sm font-semibold">Your rate as your deposit grows</figcaption>
+      <figcaption className="text-sm font-semibold">Your rate as the amount grows</figcaption>
       <p className="mt-1 mb-4 max-w-2xl text-xs leading-relaxed text-muted-foreground">
-        The more you put in, the more people you share the fees with — so every line slopes down.
+        The more you put in, the more people share the same fees — so every line slopes down.
         Small pools drop fastest. Where two lines cross, the better pool swaps.
       </p>
 
@@ -325,10 +325,10 @@ export function DilutionChart({ pools, atSizeUsd }: Props) {
       {showTable && (
         <div className="mt-3 overflow-x-auto">
           <table className="w-full text-xs">
-            <caption className="sr-only">Projected APR by deposit size</caption>
+            <caption className="sr-only">Estimated yearly rate by amount</caption>
             <thead>
               <tr className="border-b border-border text-left text-muted-foreground">
-                <th scope="col" className="py-1.5 pr-4 font-medium">Deposit</th>
+                <th scope="col" className="py-1.5 pr-4 font-medium">Amount</th>
                 {model.series.map((s) => (
                   <th key={s.pool.poolId} scope="col" className="py-1.5 pr-4 font-medium">
                     {s.pool.label}

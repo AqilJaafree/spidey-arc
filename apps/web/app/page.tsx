@@ -126,7 +126,7 @@ function PageContent() {
 
         <section aria-labelledby="controls-heading" className="mb-8">
           <h2 id="controls-heading" className="mb-3 text-sm font-semibold">
-            Your deposit
+            Amount and time
           </h2>
           <SizeControls
             sizeUsd={sizeUsd}
@@ -157,8 +157,8 @@ function PageContent() {
               ))}
             </div>
             <p className="text-xs text-muted-foreground">
-              Stablecoin pairs by default — they do not move in price, so your deposit is not
-              exposed to a token going up or down.
+              Stablecoin pairs by default — they hold their price, so you are not exposed to a token
+              going up or down.
             </p>
           </div>
         </section>
@@ -193,8 +193,8 @@ function PageContent() {
             )}
             {heroGap?.direction === 'below' && best.flags.includes('dilution') && (
               <p className="mt-3 max-w-2xl text-sm text-muted-foreground">
-                Your deposit is large relative to this pool&apos;s in-range liquidity, so you earn
-                a smaller share of the fee rate than the headline number implies.
+                Yours is large next to what this pool is already earning on, so you take a big
+                slice of the same fees. That pulls the rate below the advertised one.
               </p>
             )}
 
@@ -294,7 +294,7 @@ function PageContent() {
         {curvable.length >= 2 && (
           <section aria-labelledby="curve-heading" className="mt-10 space-y-3">
             <h2 id="curve-heading" className="text-lg font-medium">
-              What happens if you deposit more
+              What happens if you put in more
             </h2>
             <DilutionChart pools={curvable} atSizeUsd={sizeUsd} />
           </section>

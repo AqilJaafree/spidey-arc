@@ -348,32 +348,6 @@ The invariant suite was verified by deliberately breaking the contract six ways;
 
 The three skipped Solana tests need a live DLMM program, which a local validator has none of; they are skipped loudly, naming where the behaviour is proven instead, rather than deleted or left red. The same rule caught two things worth having: the exit's signer test originally failed client-side as an unknown signer and would have passed with the on-chain constraint deleted, and `position_range`'s tests could not detect an off-by-one until they asserted *acceptance* rather than only rejection. Both were found by mutating the code and checking the test failed.
 
-## Bugs found
-
-Ten, of which nine are fixed. Every one needed a *sequence* — single-call tests passed throughout. Full detail in `docs/status-report.md`.
-
-| # | Bug | Found by |
-|---|---|---|
-| 1 | Payback formula off by 10,139× | reading the spec against its own worked example |
-| 2 | Second deposit could never reach a venue | asking what a second deposit does |
-| 3 | Profitable venue could not be exited | asking what happens when it works |
-| 4 | Withdrawal shortfall → first-come-first-served | invariant suite, run 579 |
-| 5 | Payback rule bypassed by overstating size | case studies |
-| 6 | `.unwrap()` panic in the must-not-fail path | reading spec §5.4 |
-| 7 | **Capital was one-way** — deployed funds unrecoverable | running the flow on Base Sepolia |
-| 8 | Surplus stranded after the last holder exits | running the flow |
-| 9 | Unaccounted tokens ambiguous while deployed | probing untested sequences |
-| 10 | Realized loss blocked withdrawals entirely | running the flow |
-| — | Deposit front-running a NAV gain | **quantified, not fixed** |
-
-Three are worth knowing beyond the fix:
-
-**#7 proved itself with real money.** `deployIdle` sent capital out and `rebalance` moved it between venues; nothing returned it. 20 USDC is still stuck in the first Base Sepolia deployment — that Router has no function able to retrieve it.
-
-**#10 was worse than losing money.** A live position returned 4.985 of 5 USDC; the missing 0.015 stayed on the venue's book, so the vault looked solvent, no haircut applied, and `claimWithdraw` reverted. The depositor could not be paid *at all*.
-
-**The invariant suite missed #9.** `idleNeverExceedsRealBalance` checks only the idle leg, so it stayed green while equity double-counted an unrecorded return — 2,000 claimed against 1,000 real tokens. Fixed by measuring the whole system.
-
 ## Spec corrections
 
 Three claims in the specification do not survive contact:
@@ -394,7 +368,7 @@ Also worth stating plainly: **Arc's native gas is 18 decimals, not 6.** Several 
 
   Proven, 2026-08-07: `scripts/deposit-dlmm.ts` put 0.3 USDC one-sided into pool `XZgB99jbwsZyCZF7h5tLGPgXYGdZ9bX8UqLQV3upwZw` (Circle USDC = token_y) — position owned by the credit PDA, pool USDC reserve up by exactly that. Two devnet gotchas the script now handles: `InitializeBinArray` needs a raised compute budget, and `bin_array_lower`/`bin_array_upper` must be **distinct** arrays (DLMM borrows both mutably), so the range straddles two 70-bin arrays below the active bin.
 
-- ~~**No `remove_liquidity` CPI.**~~ **Live on devnet.** `withdraw_position` claims fees and removes 10,000 bps over the position's full range in one transaction, then re-marks `credit.amount` from the *measured* vault balance rather than any declared number — so impermanent loss and earned fees show up honestly instead of as a counter custody cannot back. That is LPVault bug #10 read backwards.
+- ~~**No `remove_liquidity` CPI.**~~ **Live on devnet.** `withdraw_position` claims fees and removes 10,000 bps over the position's full range in one transaction, then re-marks `credit.amount` from the *measured* vault balance rather than any declared number — so impermanent loss and earned fees show up honestly instead of as a counter custody cannot back. That is the vault's realized-loss problem read backwards: recognise what actually came back, rather than what the book claims.
 
   Full exit is a constant, not an argument. The position's range lives in `Credit`, written by `init_position`, so a partial removal that left liquidity behind while the books said `deployed == 0` is not expressible. Fees are claimed inside the same instruction because only the `Credit` PDA can sign as position owner — a fee left behind at exit would be unreachable forever, the same one-way door this closes, one step smaller. The non-USDC side goes straight to a vault-authority-owned account and never enters program custody.
 

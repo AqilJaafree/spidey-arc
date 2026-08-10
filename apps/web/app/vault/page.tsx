@@ -58,8 +58,8 @@ export default function VaultPage() {
             The vault, on Arc
           </h1>
           <p className="text-base leading-relaxed text-muted-foreground">
-            ERC-4626 over USDC. Exits go through a queue — capital in a position on another chain
-            cannot come back in the same transaction.
+            Put USDC in, get shares back. Taking money out is a two-step request and claim,
+            because funds working in a pool on another blockchain cannot return instantly.
           </p>
           <p className="text-xs text-muted-foreground">
             chain {ARC_TESTNET.id} ·{' '}
