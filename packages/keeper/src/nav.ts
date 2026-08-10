@@ -133,9 +133,16 @@ export function shouldReport(input: {
   // rather than a silent one on the first vault that has capital deployed.
   const reportAtAgeSeconds = resolveReportAtAge(bounds);
 
-  // Nothing deployed means nothing unverified, so age cannot matter — the
-  // contract skips its own staleness check on the same condition.
-  if (current === 0n) return { post: false, reason: 'nothing-deployed' };
+  // Nothing deployed means nothing unverified — but only when the *measurement*
+  // agrees, not when the mark says so on its own.
+  //
+  // This used to short-circuit on `current === 0n` alone, which let the number
+  // under audit decide whether to audit it. Capital in the relay against a zero
+  // mark is an unmarked *position*: the exact mirror of the unmarked loss this
+  // module exists to prevent, and it was reported as "nothing deployed" and
+  // skipped. The contract's own reasoning is about age, not value — age cannot
+  // matter with nothing deployed — and conflating the two is what hid this.
+  if (current === 0n && computed === 0n) return { post: false, reason: 'nothing-deployed' };
 
   const age = nowSeconds - updatedAtSeconds;
   // A mark stamped in our future means the clocks disagree, and every age
@@ -163,7 +170,12 @@ export function shouldReport(input: {
   const maxStep = (current * BigInt(bounds.maxNavDeltaBps)) / BPS;
   const rising = computed > current;
   const diff = rising ? computed - current : current - computed;
-  const capped = diff > maxStep;
+  // Uncapped off a zero mark, mirroring `LPVault.reportNav`, which skips its
+  // delta bound entirely when `previous == 0`. Without this the cap is
+  // self-defeating at zero: `maxStep` is a fraction of `current`, so it floors
+  // to 0 and a "capped" rise posts `current + 0` — the mark could never leave
+  // the floor, and a real position would stay unmarked forever.
+  const capped = current !== 0n && diff > maxStep;
 
   let amount: bigint;
   if (!capped) {

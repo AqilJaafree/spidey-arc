@@ -41,6 +41,49 @@ describe('shouldReport', () => {
     expect(d).toEqual({ post: false, reason: 'nothing-deployed' });
   });
 
+  it('marks a position the vault does not know it holds', () => {
+    // The bug this closes: both the job and this rule short-circuited on
+    // `current === 0`, which is the very number they exist to audit. Capital in
+    // the relay against a zero mark is an *unmarked position* — the mirror of the
+    // unmarked loss the whole design is built to avoid — and it was reported as
+    // "nothing deployed".
+    const d = shouldReport({
+      current: 0n, computed: USDC(500), updatedAtSeconds: NOW - 100_000, nowSeconds: NOW, bounds: BOUNDS,
+    });
+    expect(d).toEqual({ post: true, amount: USDC(500), capped: false, reason: 'changed' });
+  });
+
+  it('does not cap the first step off zero, because the contract does not', () => {
+    // `maxStep` is a fraction of `current`, so at zero it floors to 0 and a
+    // capped rise would post 0 — the mark could never climb off the floor.
+    // `LPVault.reportNav` skips its delta bound entirely when `previous == 0`,
+    // and this mirrors that rather than inventing a stricter rule.
+    const d = shouldReport({
+      current: 0n, computed: USDC(1_000_000), updatedAtSeconds: NOW - 100_000, nowSeconds: NOW, bounds: BOUNDS,
+    });
+    expect(d.post).toBe(true);
+    if (d.post) {
+      expect(d.amount).toBe(USDC(1_000_000));
+      expect(d.capped).toBe(false);
+    }
+  });
+
+  it('still says nothing-deployed when the measurement agrees the vault is empty', () => {
+    const d = shouldReport({
+      current: 0n, computed: 0n, updatedAtSeconds: NOW - 100_000, nowSeconds: NOW, bounds: BOUNDS,
+    });
+    expect(d).toEqual({ post: false, reason: 'nothing-deployed' });
+  });
+
+  it('honours the cooldown even for an unmarked position', () => {
+    // The contract checks NavCooldown before it looks at `previous`, so a zero
+    // mark buys no exemption from it.
+    const d = shouldReport({
+      current: 0n, computed: USDC(500), updatedAtSeconds: NOW - 60, nowSeconds: NOW, bounds: BOUNDS,
+    });
+    expect(d).toEqual({ post: false, reason: 'cooldown' });
+  });
+
   it('refuses inside the cooldown, even when the value changed', () => {
     const d = shouldReport({
       current: USDC(1000), computed: USDC(1010), updatedAtSeconds: NOW - 60, nowSeconds: NOW, bounds: BOUNDS,
@@ -278,12 +321,42 @@ describe('shouldReport', () => {
     }), RUNS);
   });
 
-  it('never posts when nothing is deployed', () => {
-    fc.assert(fc.property(arbState, ({ computed, age }) => {
+  /**
+   * This replaces a property that asserted `current === 0n` never posts, for any
+   * `computed`. That was the bug stated as an invariant: it let the mark under
+   * audit decide whether to audit it, so capital sitting in the relay against a
+   * zero mark was reported as "nothing deployed" and left unmarked forever.
+   *
+   * The genuine invariant is narrower — nothing deployed *and nothing measured*.
+   */
+  it('never posts when the mark and the measurement agree the vault is empty', () => {
+    fc.assert(fc.property(fc.integer({ min: 0, max: 200_000 }), (age) => {
       const d = shouldReport({
-        current: 0n, computed, updatedAtSeconds: NOW - age, nowSeconds: NOW, bounds: BOUNDS,
+        current: 0n, computed: 0n, updatedAtSeconds: NOW - age, nowSeconds: NOW, bounds: BOUNDS,
       });
       expect(d.post).toBe(false);
     }), RUNS);
+  });
+
+  it('always marks an unmarked position once the cooldown has passed', () => {
+    // The mark has to be able to leave zero. `maxStep` is a fraction of
+    // `current`, so any cap applied here would floor to 0 and post `0 + 0`.
+    fc.assert(
+      fc.property(
+        fc.bigInt({ min: 1n, max: 2n ** 90n }),
+        fc.integer({ min: BOUNDS.navCooldownSeconds, max: 200_000 }),
+        (computed, age) => {
+          const d = shouldReport({
+            current: 0n, computed, updatedAtSeconds: NOW - age, nowSeconds: NOW, bounds: BOUNDS,
+          });
+          expect(d.post).toBe(true);
+          if (d.post) {
+            expect(d.amount).toBe(computed);
+            expect(d.capped).toBe(false);
+          }
+        },
+      ),
+      RUNS,
+    );
   });
 });

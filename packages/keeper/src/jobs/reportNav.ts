@@ -36,10 +36,15 @@ export async function reportNavJob(deps: ReportNavDeps): Promise<string> {
   console.log(`  mark   ${vaultNav.deployedAssets} at ${vaultNav.updatedAt} (age ${nowSeconds - vaultNav.updatedAt}s)`);
   console.log(`  bounds cooldown ${vaultNav.bounds.navCooldownSeconds}s, stale at ${vaultNav.bounds.maxNavAgeSeconds}s, delta ${vaultNav.bounds.maxNavDeltaBps}bps`);
 
-  if (vaultNav.deployedAssets === 0n) {
-    return 'nothing deployed — the staleness gate does not apply';
-  }
-
+  // The relay is read unconditionally, including when the mark says zero.
+  //
+  // This used to return early on `deployedAssets === 0n`, which decided whether
+  // to verify the mark by trusting the mark. Capital can reach the relay without
+  // the vault's bookkeeping following it — a mint from a burn Arc never recorded,
+  // a transfer straight to the address, a `recordVenueClosed` that zeroed the
+  // mark while the money was still in flight — and every one of those reads as
+  // "nothing deployed" while real assets sit unmarked. One extra balance read is
+  // the price of the job doing what its name claims.
   const relayBalance = await readRelayBalance(deps.base, deps.baseUsdc, deps.relay);
   console.log(`  relay  ${relayBalance}  in-flight 0  computed ${relayBalance}`);
   // In-flight stays zero until it is wired to the sweep's scan. Bounded and
