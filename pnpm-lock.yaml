@@ -41,6 +41,9 @@ importers:
       react-dom:
         specifier: ^19.0.0
         version: 19.2.8(react@19.2.8)
+      viem:
+        specifier: ^2.55.10
+        version: 2.55.10(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)(zod@3.25.67)
     devDependencies:
       '@tailwindcss/postcss':
         specifier: ^4.0.0

@@ -8,7 +8,7 @@ import { aprFromBps, gapInPoints, gapTone, relativeTime, usdFull } from '@/lib/f
 import { ExcludedGroups } from '@/components/ExcludedGroups';
 import { PoolTable, PoolTableSkeleton } from '@/components/PoolTable';
 import { SizeControls } from '@/components/SizeControls';
-import { ThemeToggle } from '@/components/ThemeToggle';
+import { SiteHeader } from '@/components/SiteHeader';
 
 function parseUrlNumber(value: string | null, fallback: number): number {
   if (value === null) return fallback;
@@ -88,14 +88,7 @@ function PageContent() {
 
   return (
     <>
-      <header className="sticky top-0 z-30 border-b border-border bg-background/95 backdrop-blur">
-        <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-3 md:px-6 lg:px-8">
-          <p className="text-xs font-medium tracking-[0.08em] text-muted-foreground uppercase">
-            USDC LP Vault · Comparative Yield Analysis
-          </p>
-          <ThemeToggle />
-        </div>
-      </header>
+      <SiteHeader />
 
       <main className="mx-auto max-w-7xl px-4 py-10 md:px-6 lg:px-8">
         <section className="mb-10 max-w-3xl space-y-3">
@@ -300,13 +293,7 @@ function PageContent() {
 function PageFallback() {
   return (
     <>
-      <header className="sticky top-0 z-30 border-b border-border bg-background/95 backdrop-blur">
-        <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-3 md:px-6 lg:px-8">
-          <p className="text-xs font-medium tracking-[0.08em] text-muted-foreground uppercase">
-            USDC LP Vault · Comparative Yield Analysis
-          </p>
-        </div>
-      </header>
+      <SiteHeader />
       <main className="mx-auto max-w-7xl px-4 py-10 md:px-6 lg:px-8">
         <div className="mb-10 max-w-3xl space-y-3">
           <div className="h-4 w-56 animate-pulse rounded bg-muted" />

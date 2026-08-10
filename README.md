@@ -96,16 +96,17 @@ Every one of those pools used to report the same 51% capture and the same zero e
 
 ```bash
 pnpm install
-pnpm test          # 443 TypeScript tests
+pnpm test          # 549 TypeScript tests
 pnpm api           # scoring engine on :8787
-pnpm web           # UI on :3000
+pnpm web           # UI on :3000  —  / analysis, /vault deposit & withdraw
 
 cd contracts
 forge install foundry-rs/forge-std OpenZeppelin/openzeppelin-contracts
-forge test         # 103 tests, including gas-budget conformance
+forge test         # 140 tests, including gas-budget conformance
 ```
 
-Nothing needs an API key. The UI needs the API running.
+Nothing needs an API key. The analysis page needs the API running; `/vault` reads
+Arc directly and needs only a wallet.
 
 ## The rule that shapes everything
 
@@ -120,7 +121,7 @@ So adapters report `null` when they cannot measure, every number carries the ran
   packages/adapters  Meteora, Orca, Uniswap v3, Raydium, DefiLlama → NormalizedPool
   packages/api       Hono HTTP surface, TTL-cached
   packages/keeper    Merkle tree builder, rebalance planner, CCTP relayer
-  apps/web           Next.js comparison UI
+  apps/web           Next.js — comparison UI, and the vault's own front door
   contracts/         LPVault (ERC-4626) + ScoreOracle + Router + UniV3Executor
   solana/            MeteoraReceiver — two-stage CCTP hook, DLMM in and out (Anchor)
 ```
@@ -132,6 +133,14 @@ Three contracts do the work:
 - **`Router`** — refuses to move capital unless the APR gain repays the cost of moving over the expected holding period, with hysteresis to stop the vault flip-flopping.
 
 No off-chain party holds a key that can move user funds. The reporter posts scores and NAV; only the Router moves capital, and only when the on-chain payback inequality holds.
+
+## Using the vault
+
+`/vault` connects a wallet to the Arc hub and runs the depositor cycle: deposit, request, claim. Wallet discovery is EIP-6963 — no wallet library, no WalletConnect project id. No wallet ships Arc, so connecting offers to add it; chain 5042002, and the gas token is USDC at 18 native decimals over the same balance the vault reads at 6 through the ERC-20 shim.
+
+Three decimal scales meet on that page and mixing them is the easiest way to put a wrong number on screen: **USDC 6, spUSDC shares 9** (ERC-4626 adds the 3-place virtual-share offset), **native gas 18**.
+
+Every action is simulated against the node before the wallet is asked to sign, and a refusal arrives as a sentence rather than a hex blob. That is the exclusion table's rule applied to transactions — name the reason, never approximate it — and it is not decorative: the queue genuinely refuses to pay out of a mark older than six hours, and the page says so instead of spending a transaction to find out.
 
 ## Arc → Base Sepolia, over CCTP
 
