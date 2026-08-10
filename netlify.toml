@@ -5,8 +5,12 @@
 # The scoring engine is NOT deployed here. A cold scan of 207 pools takes ~8.4s
 # against Netlify's 10s synchronous function limit, and a serverless invocation
 # gets no shared cache — so every cold request would pay that and some would
-# lose. It runs as a long-lived process elsewhere and `NEXT_PUBLIC_API_URL`
-# points at it.
+# lose. It runs as a long-lived process elsewhere, where the cache stays warm
+# and the same scan answers in milliseconds.
+#
+# Its address is `NEXT_PUBLIC_API_URL`, set in Netlify's environment variables
+# and in a local `.env` — deliberately not written down here, because this file
+# is public. See `.env.example` for the shape.
 #
 # `/vault` needs none of that: it reads Arc directly from the browser.
 

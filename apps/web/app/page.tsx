@@ -211,11 +211,11 @@ function PageContent() {
                 </p>
               ) : (
                 <p className="mt-1 text-xs text-muted-foreground">
-                  The engine is a long-lived process and is not deployed yet. The{' '}
+                  The engine is a separate long-lived process. The{' '}
                   <Link href="/vault" className="underline decoration-border underline-offset-4 hover:text-foreground">
                     vault
                   </Link>{' '}
-                  needs it for nothing and is live.
+                  reads Arc directly and is unaffected.
                 </p>
               )}
             </div>
