@@ -19,18 +19,25 @@ export const DEFAULT_SOLANA_RPC = 'https://api.mainnet-beta.solana.com';
  *
  * An explicit `rpcUrl` always wins — a caller that named an endpoint meant it.
  *
- * `SOLANA_RPC_URL` exists because of a cadence hazard, not a preference. The
- * public default is fine for a keeper's periodic scan or a one-off `record`
- * capture: a full `topK: 8` enrichment took 6.8s with no 429s. It is not fine
- * for a server loop. `packages/api/src/poolCache.ts` holds pools for 60s and
- * defaults to every adapter, Meteora included, so a running API server issues
- * 1 + 3K = 25 RPC calls a minute — 8 of them `getProgramAccounts` scans, the
- * most expensive method there is, at ~7-10s each. That is roughly 11,500
- * program scans a day against a free endpoint, and a substantial duty cycle of
- * it. `poolCache.ts`'s own header rejects refetching per keystroke as "rude to
- * the upstream APIs"; this is worse than the thing that comment rejects. A
- * deployment running that loop must point `SOLANA_RPC_URL` at an endpoint it is
- * entitled to hammer.
+ * `SOLANA_RPC_URL` is a robustness option, not a requirement. An earlier version
+ * of this comment called the public default unusable for a server loop, reasoning
+ * from the call count: `packages/api/src/poolCache.ts` holds pools for 60s and
+ * defaults to every adapter, so a running API issues 1 + 3K = 25 calls a minute,
+ * 8 of them `getProgramAccounts`. That inference was wrong, and measuring it is
+ * what showed the mistake.
+ *
+ * At the real cadence — three scans 60s apart — every one enriched 8 of 8 in
+ * 7-8.5s. The limit is real but further out: five scans back to back, ~120 calls
+ * in 25s, collapsed to 8, 2, 0, 0, 0 enriched. `PoolCache` cannot produce that,
+ * because its TTL *and* its in-flight guard collapse concurrent callers into one
+ * upstream fetch, so the ceiling is 25 calls a minute however many people are
+ * clicking.
+ *
+ * Two things follow. Point this at a paid endpoint if you have one — it removes
+ * the only upstream this adapter cannot degrade around, and costs nothing. And
+ * note how the failure looked when it did happen: no error, no log, just 0 of 8
+ * enriched, *faster* each time because a refused read returns quickly. That is
+ * why `AdapterResult.degraded` exists and why `/health` reports it.
  */
 export function resolveRpcUrl(explicit?: string): string {
   // Trimmed and treated as absent when blank: deploy platforms hand over an

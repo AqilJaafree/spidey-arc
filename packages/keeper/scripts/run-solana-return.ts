@@ -12,13 +12,27 @@
  *
  *   cd packages/keeper && \
  *     EVM_PRIVATE_KEY=$(cast wallet dk spidey-deployer --unsafe-password "$PW") \
- *     SOLANA_PRIVATE_KEY="$(cat ~/.config/solana/id.json)" \
+ *     SOLANA_PRIVATE_KEY="$(cat "$(solana config get keypair | awk '{print $NF}')")" \
  *     AMOUNT=0.4 ../../node_modules/.bin/tsx scripts/run-solana-return.ts
  *
  * Both keys are read from the environment and never logged. They are different
  * keys doing different jobs: the Solana key signs the burn (and must own the
- * USDC — see the vault-authority note in the preflight), the EVM key submits the
- * mint on Arc.
+ * USDC), the EVM key submits the mint on Arc.
+ *
+ * ## Do not reach for `~/.config/solana/id.json`
+ *
+ * An earlier version of this comment said to, and it was wrong. That path is not
+ * the configured keypair and, here, not the vault authority: it holds
+ * `8sHRx1C6…` while the USDC sits under `AM9tkemP…`, whose keypair the CLI is
+ * pointed at from somewhere else entirely. Burning with it would sign as an
+ * account with nothing to burn.
+ *
+ * Hence reading the path out of `solana config get` above rather than hardcoding
+ * one — the configured keypair is the thing that moves, and a path copied into a
+ * comment goes stale silently. Confirm before running: `solana address` must
+ * print the same account `preflight-solana-return.ts` reports as holding the
+ * burnable USDC. The upgrade authority, the vault authority and the CLI default
+ * are three different keys, and naming the wrong one fails confusingly.
  *
  * ## Why this defaults to an EOA and not the vault
  *
@@ -43,7 +57,9 @@ if (!evmPrivateKey) throw new Error('set EVM_PRIVATE_KEY (0x-prefixed) — submi
 const solanaPrivateKey = process.env.SOLANA_PRIVATE_KEY;
 if (!solanaPrivateKey) {
   throw new Error(
-    'set SOLANA_PRIVATE_KEY (id.json byte array, base58 or base64) — signs the burn on Solana. ' +
+    'set SOLANA_PRIVATE_KEY (JSON byte array, base58 or base64) — signs the burn on Solana, ' +
+      'and must be the account holding the USDC. Read the path from `solana config get keypair`; ' +
+      'it is not ~/.config/solana/id.json here. ' +
       'An EVM key cannot sign on Solana, and this refuses rather than falling back to the wrong signer.',
   );
 }
